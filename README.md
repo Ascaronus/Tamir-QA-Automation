@@ -31,12 +31,14 @@ uv run pytest
 Если активировать окружение (`source .venv/bin/activate`), команды выглядят
 проще: `playwright install chromium` и `pytest`.
 
-Выборочный запуск по маркерам (`unit`, `smoke`, `api`, `tcms` — они объявлены в `pytest.ini`):
+Выборочный запуск по маркерам (`unit`, `smoke`, `api`, `seo`, `catalog`, `tcms` — они объявлены в `pytest.ini`):
 
 ```bash
-pytest -m "unit or smoke or api" # как в CI
+pytest -m "unit or smoke or api or seo or catalog" # как в CI
 pytest -m smoke                  # только витрина
 pytest -m api                    # только Medusa API
+pytest -m seo                    # SEO-контур витрины: индексация, редиректы, canonical/hreflang
+pytest -m catalog                # sitemap и листинг каталога
 pytest -m tcms                   # интеграция с Kiwi TCMS, вручную (см. docs/TCMS.md)
 ```
 
@@ -68,6 +70,7 @@ Allure-результаты складываются в `.tmp/allure-results` (�
 | Документ | О чём |
 | --- | --- |
 | `docs/ENVIRONMENTS.md` | куда имеют право ходить прогоны и как устроен guard по хостам |
+| `docs/TEST-PLAN.md` | план тестирования: §13 — SEO и каталог (M2), факты зонда, продуктовые разрывы и как они помечены |
 | `docs/REPORTING.md` | как прогон попадает на `qa.tamir.rs`: Allure, `runs.json`, права, почему версии действий зафиксированы |
 | `docs/TCMS.md` | Kiwi TCMS на `tcms.tamir.rs`: JSON-RPC `/json-rpc/`, клиент, сидинг каталога, `TCMS_*`, маркер `tcms`, отличия API 17.2 |
 
@@ -91,10 +94,13 @@ Playwright-сценарии и почтовые проверки (Mailpit) — M
 
 ```
 qa/            конфигурация, HTTP-клиент, клиент Kiwi TCMS, публикация индекса прогонов
+  seo.py       парсеры `X-Robots-Tag`, `canonical`/`hreflang`, `robots.txt`, `sitemap.xml`
 scripts/       сидинг каталога Kiwi TCMS и перенос результатов прогонов в TCMS
 tests/
   smoke/       read-only проверки витрины
   api/         контракты Medusa API и проверки Kiwi TCMS (маркер `tcms`)
-  unit/        чистые юнит-проверки guard'а и клиента TCMS
-docs/          окружения, схема отчётности и Kiwi TCMS
+  seo/         закрытие non-prod от индексации, редиректы локалей, `canonical`/`hreflang` (маркер `seo`)
+  catalog/     `sitemap.xml` и контракт листинга каталога (маркер `catalog`)
+  unit/        чистые юнит-проверки guard'а, парсеров и клиента TCMS
+docs/          окружения, план тестирования, схема отчётности и Kiwi TCMS
 ```

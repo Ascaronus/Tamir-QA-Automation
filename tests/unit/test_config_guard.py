@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 import requests
 
-from qa.config import is_allowed_target, require_allowed_target
+from qa.config import QaConfig, is_allowed_target, require_allowed_target, site_origin_for
 from qa.http import QaHttpClient
 
 pytestmark = pytest.mark.unit
@@ -92,3 +92,37 @@ def test_http_client_guard_rejects_redirect_to_production() -> None:
     redirected.url = "https://tamir.rs/admin"
     with pytest.raises(RuntimeError):
         client._guard_redirect(redirected)
+
+
+# --- Публичный origin для SEO-атрибутов (M2) ---------------------------------
+# Запросы идут на стенд, а canonical/hreflang продукт ставит на публичный
+# домен, поэтому ожидания берутся из таблицы, а не из хоста запроса.
+
+SITE_ORIGIN_CASES = [
+    ("https://test.tamir.rs", "https://tamir.rs"),
+    # Для хостов вне таблицы (локальный прогон) ожидания нет — сравнение идёт
+    # с самим адресом, поэтому None.
+    ("http://localhost:3000", None),
+    ("https://qa.tamir.rs", None),
+    ("не url", None),
+]
+
+
+@pytest.mark.parametrize(("web_url", "expected"), SITE_ORIGIN_CASES)
+def test_site_origin_lookup(web_url: str, expected: str | None) -> None:
+    assert site_origin_for(web_url) == expected
+
+
+def test_config_site_origin_for_staging_is_public_domain() -> None:
+    config = QaConfig(env="staging", web_url="https://test.tamir.rs", api_url="https://test-api.tamir.rs")
+    assert config.site_origin == "https://tamir.rs"
+
+
+def test_config_site_origin_falls_back_to_own_origin() -> None:
+    config = QaConfig(env="dev", web_url="http://localhost:3000", api_url="http://localhost:9000")
+    assert config.site_origin == "http://localhost:3000"
+
+
+def test_config_expects_noindex_on_staging() -> None:
+    config = QaConfig(env="staging", web_url="https://test.tamir.rs", api_url="https://test-api.tamir.rs")
+    assert config.expects_noindex is True
