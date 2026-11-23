@@ -60,6 +60,29 @@ def _is_allowed_host(host: str) -> bool:
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_HOSTS)
 
 
+# Публичный origin, который приложение подставляет в canonical/hreflang и sitemap.
+# Продуктовое SEO считает публичным только `tamir.rs` (см. `PUBLIC_SITE_ORIGIN`
+# в `frontend/src/lib/seo.ts`), поэтому на стенде canonical и alternates всегда
+# ведут на прод-домен, хотя сами запросы идут на `test.tamir.rs`. Проверять это
+# надо по таблице, а не по хосту запроса. None (хоста нет в таблице) означает
+# «canonical ожидается на том же origin, откуда отвечает сервер».
+STAGING_SITE_ORIGINS: dict[str, str] = {
+    "test.tamir.rs": "https://tamir.rs",
+}
+
+
+def site_origin_for(web_url: str) -> str | None:
+    """Публичный origin для SEO-атрибутов данного web-адреса, либо None.
+
+    None значит «атрибуты должны совпадать с самим `web_url`» — так ведут себя
+    локальные прогоны против `localhost`.
+    """
+    host = _host_of(web_url)
+    if not host:
+        return None
+    return STAGING_SITE_ORIGINS.get(host)
+
+
 def is_allowed_target(url: str) -> bool:
     """True, если URL ведёт на разрешённый M1-хост.
 
@@ -114,6 +137,24 @@ class QaConfig:
     @property
     def is_staging(self) -> bool:
         return self.env == "staging"
+
+    @property
+    def site_origin(self) -> str:
+        """Origin, который должен стоять в canonical/hreflang этого web-адреса.
+
+        На стенде это публичный `https://tamir.rs`, а не `test.tamir.rs`:
+        SEO-атрибуты продуктовый код считает по публичному домену.
+        """
+        return site_origin_for(self.web_url) or self.web_url
+
+    @property
+    def expects_noindex(self) -> bool:
+        """True, когда окружение должно быть закрыто от поисковых систем.
+
+        Любой non-prod (в том числе staging по умолчанию) обязан отдавать
+        `noindex`, иначе тестовый индекс начнёт каннибалить боевой.
+        """
+        return not os.getenv("QA_IS_PRODUCTION", "").strip() in ("1", "true", "yes")
 
     @property
     def rpc_url(self) -> str:
