@@ -1,0 +1,19 @@
+version: 2
+
+# Обновления версий действий идут отдельными PR, а не ручными правками в main:
+# у части экшенов нет major-тега (astral-sh/setup-uv@v10 раннер не нашёл), и
+# такой PR сразу проверяется тем же прогоном QA.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies

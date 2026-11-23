@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# Версии действий берутся только теми, что уже отработали на этом раннере:
+# major-тега у части экшенов нет (setup-uv@v10 → "unable to find version"), а
+# обновляются они через Dependabot (.github/dependabot.yml), а не ручным
+# переписыванием в main.
+
 jobs:
   qa-smoke:
     name: Прогон unit + smoke + api (self-hosted runner на staging)
@@ -27,10 +32,10 @@ jobs:
       MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Установка uv
-        uses: astral-sh/setup-uv@v10
+        uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
 
@@ -85,7 +90,7 @@ jobs:
           PY
 
       - name: Загрузка Allure-результатов
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         if: always()
         with:
           name: allure-results
@@ -98,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Java 17 (нужна для Allure CLI)
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
@@ -107,7 +112,7 @@ jobs:
         run: npm i -g allure-commandline
 
       - name: Скачивание результатов
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v5
         with:
           name: allure-results
           path: .tmp/allure-results
@@ -116,7 +121,7 @@ jobs:
         run: allure generate .tmp/allure-results -o .tmp/allure-report --clean
 
       - name: Загрузка отчёта
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: allure-report
           path: .tmp/allure-report/
@@ -130,10 +135,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Скачивание отчёта
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v5
         with:
           name: allure-report
           path: .tmp/allure-report

@@ -23,7 +23,7 @@ Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на то
 
 ## 2. `qa-report` — GitHub-hosted (ubuntu-latest)
 
-Ставит Java (`actions/setup-java@v6`, Temurin 17) и CLI Allure
+Ставит Java (`actions/setup-java@v4`, Temurin 17) и CLI Allure
 (`npm i -g allure-commandline`), скачивает артефакт `allure-results` и выполняет:
 
 ```bash
@@ -31,6 +31,11 @@ allure generate .tmp/allure-results -o .tmp/allure-report --clean
 ```
 
 Результат — артефакт `allure-report`.
+
+Версии действий зафиксированы теми, что уже отработали на этом раннере: у части
+экшенов нет major-тега (`astral-sh/setup-uv@v10` раннер не нашёл, и джоба упала
+ещё на `Set up job`), поэтому обновления приходят отдельными PR от Dependabot
+(`.github/dependabot.yml`), а не ручными правками в `main`.
 
 ## 3. `qa-publish` — self-hosted runner, только `main`
 
