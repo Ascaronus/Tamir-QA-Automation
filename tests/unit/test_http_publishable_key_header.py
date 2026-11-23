@@ -8,9 +8,12 @@
 
 from __future__ import annotations
 
+import pytest
 import requests
 
 from qa.http import PUBLISHABLE_KEY_ENV, PUBLISHABLE_KEY_HEADER, QaHttpClient
+
+pytestmark = pytest.mark.unit
 
 
 class _Recorder:

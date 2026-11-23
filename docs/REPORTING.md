@@ -9,8 +9,12 @@ Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на то
 развернут стек отчётов (`/opt/qa-stack`). Он:
 
 1. ставит зависимости через `uv` (`uv venv --python 3.12`, `uv pip install -r requirements.txt`);
-2. запускает `pytest -m "smoke or api" --junitxml=.tmp/junit.xml`;
-3. складывает сырые Allure-результаты в `.tmp/allure-results` (это делает
+2. запускает **одним** вызовом `pytest -m "unit or smoke or api" --junitxml=.tmp/junit.xml`
+   (`unit` — офлайн-проверки самого репозитория, они идут первыми). Один вызов важен:
+   `--clean-alluredir` из `addopts` стирал бы результаты предыдущего запуска;
+3. пишет в `.tmp/allure-results` файлы `environment.properties` и `executor.json` —
+   описание окружения и ссылка на прогон GitHub Actions прямо внутри Allure-отчёта;
+4. складывает сырые Allure-результаты в `.tmp/allure-results` (это делает
    `--alluredir` из `pytest.ini`) и загружает их артефактом `allure-results`
    с `if: always()`, чтобы отчёт был даже при упавших тестах.
 
@@ -19,7 +23,7 @@ Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на то
 
 ## 2. `qa-report` — GitHub-hosted (ubuntu-latest)
 
-Ставит Java (`actions/setup-java@v4`, Temurin 17) и CLI Allure
+Ставит Java (`actions/setup-java@v6`, Temurin 17) и CLI Allure
 (`npm i -g allure-commandline`), скачивает артефакт `allure-results` и выполняет:
 
 ```bash
@@ -68,6 +72,11 @@ Runner на staging работает под пользователем `actions-
 `/opt/qa-stack/reports` (вместе с подкаталогом `json`) принадлежит `actions-runner`.
 Поэтому публикация идёт обычным `cp` и обычным скриптом: **без sudo и без SSH**
 (runner физически находится на том же хосте, где лежит каталог отчётов).
+
+Отдаваемые файлы при этом должны быть доступны на чтение всем: nginx внутри
+контейнера работает под своим пользователем и видит файлы только по правам.
+`publish_runs_index.py` перед заменой `runs.json` явно ставит `0o644`, иначе
+`tempfile.mkstemp` создаёт файл как `0600`, и индекс отдаёт `403`.
 
 ## Формат `runs.json`
 

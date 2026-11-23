@@ -12,6 +12,8 @@ import requests
 from qa.config import is_allowed_target, require_allowed_target
 from qa.http import QaHttpClient
 
+pytestmark = pytest.mark.unit
+
 ALLOWED_URLS = [
     "https://test.tamir.rs/rs",
     "https://test-api.tamir.rs/store/products",

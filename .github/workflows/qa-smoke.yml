@@ -20,17 +20,17 @@ permissions:
 
 jobs:
   qa-smoke:
-    name: Прогон smoke + api (self-hosted runner на staging)
+    name: Прогон unit + smoke + api (self-hosted runner на staging)
     runs-on: [self-hosted, linux, tamir-qa]
     env:
       # Единственный секрет конвейера — только имя; значение в GitHub Actions secrets.
       MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Установка uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10
         with:
           enable-cache: true
 
@@ -43,14 +43,49 @@ jobs:
           # Нужно для e2e в M2; в M1 браузерные тесты ещё не пишутся.
           .venv/bin/playwright install chromium
 
+      # Один запуск pytest: addopts уже содержит --clean-alluredir, поэтому
+      # несколько вызовов подряд стёрли бы результаты предыдущего.
       - name: Запуск проверок
         run: |
           set -euo pipefail
           source .venv/bin/activate
-          pytest -m "smoke or api" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
+          pytest -m "unit or smoke or api" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
+
+      # МетADATA отчёта: из чего и где получен прогон. Значений секретов здесь нет.
+      - name: Метаданные для Allure
+        if: always()
+        run: |
+          set -euo pipefail
+          cat > .tmp/allure-results/environment.properties <<'ENV'
+          Wall=staging
+          Web=https://test.tamir.rs
+          Api=https://test-api.tamir.rs
+          Reports=https://qa.tamir.rs
+          TCMS=https://tcms.tamir.rs
+          Mailpit=http://192.168.1.143:8025 (только из локальной сети)
+          Runner=self-hosted tamir-qa
+          ENV
+          python3 - <<'PY'
+          import json
+          import os
+
+          run_number = os.environ["GITHUB_RUN_NUMBER"]
+          executor = {
+              "name": "Tamir QA",
+              "type": "github",
+              "buildName": f"QA smoke #{run_number}",
+              "buildUrl": (
+                  f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
+                  f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+              ),
+              "reportUrl": f"https://qa.tamir.rs/{run_number}/",
+          }
+          with open(".tmp/allure-results/executor.json", "w", encoding="utf-8") as handle:
+              json.dump(executor, handle, ensure_ascii=False, indent=2)
+          PY
 
       - name: Загрузка Allure-результатов
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: allure-results
@@ -63,7 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Java 17 (нужна для Allure CLI)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "17"
@@ -72,7 +107,7 @@ jobs:
         run: npm i -g allure-commandline
 
       - name: Скачивание результатов
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: allure-results
           path: .tmp/allure-results
@@ -81,7 +116,7 @@ jobs:
         run: allure generate .tmp/allure-results -o .tmp/allure-report --clean
 
       - name: Загрузка отчёта
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: allure-report
           path: .tmp/allure-report/
@@ -95,10 +130,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Скачивание отчёта
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: allure-report
           path: .tmp/allure-report
