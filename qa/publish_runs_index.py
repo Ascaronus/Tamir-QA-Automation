@@ -96,13 +96,18 @@ def merge_entries(existing: list[dict[str, Any]], entry: dict[str, Any]) -> list
 
 
 def write_index(index_path: Path, runs: list[dict[str, Any]]) -> None:
-    """Атомарная запись: во временный файл, затем os.replace."""
+    """Атомарная запись: во временный файл, затем os.replace.
+
+    `tempfile.mkstemp` создаёт файл с правами 0600 — nginx внутри контейнера
+    тогда отдаёт 403 на /json/runs.json. Права выставляются явно.
+    """
     index_path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"runs": runs}, ensure_ascii=False, indent=2)
     fd, tmp_name = tempfile.mkstemp(dir=str(index_path.parent), prefix=".runs-", suffix=".json")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(payload + "\n")
+        os.chmod(tmp_name, 0o644)
         os.replace(tmp_name, index_path)
     except BaseException:
         if os.path.exists(tmp_name):

@@ -67,3 +67,12 @@ def test_api_health_route_is_absent(api_client: QaHttpClient) -> None:
         f"/api/health вернул {response.status_code}, а на этой версии Medusa "
         "роут должен отсутствовать (404)"
     )
+
+
+@allure.step("GET /health отвечает 200 — это рабочая health-точка Medusa")
+def test_api_health_route_works(api_client: QaHttpClient) -> None:
+    """Рабочая точка — `/health` (без префикса `/api`), ключа она не требует."""
+    response = api_client.get("/health")
+    assert response.status_code == 200, (
+        f"/health вернул {response.status_code}, ожидался 200"
+    )
