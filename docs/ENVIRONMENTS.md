@@ -10,7 +10,7 @@
 | Витрина (web storefront) | `https://test.tamir.rs` | smoke: `robots.txt`, `sitemap.xml`, `/rs`, редирект `/` |
 | Medusa API | `https://test-api.tamir.rs` | контракты: `/store/products`, отсутствие `/api/health` |
 | UI отчётов QA (self-hosted Allure + индекс прогонов) | `https://qa.tamir.rs` | публикация результатов джобом `qa-publish` |
-| Kiwi TCMS (тест-планы и тест-кейсы) | `https://tcms.tamir.rs` | учёт тестов; интеграция через XML-RPC `/xml-rpc/` — в M2 |
+| Kiwi TCMS (тест-планы и тест-кейсы) | `https://tcms.tamir.rs` | учёт тестов; интеграция через JSON-RPC `/json-rpc/` — см. [TCMS.md](TCMS.md) |
 | Mailpit (перехватчик почты) | `192.168.1.143:8025` (LAN staging) | только из self-hosted runner на staging; из GitHub-hosted джобов **не используется** |
 
 ## Про Mailpit

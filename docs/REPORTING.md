@@ -128,3 +128,29 @@ python3 qa/publish_runs_index.py \
 значение живёт в GitHub Actions secrets). Без него позитивная проверка с
 publishable-ключом корректно скипается, а негативная (`400 not_allowed`)
 работает всегда.
+
+## Известные проблемы и как они были починены
+
+1. **`runs.json` отдавал `403`.** `qa/publish_runs_index.py` писал индекс через
+   `tempfile.mkstemp`, а тот создаёт файл с правами `0600`; nginx внутри контейнера
+   работает под другим пользователем и читает файлы только по правам — публичный
+   `/json/runs.json` отвечал `403`. Теперь `write_index()` пишет во временный файл,
+   явно ставит `os.chmod(..., 0o644)` и только потом делает `os.replace`.
+2. **Раздача отчётов закрывалась allow-списком nginx.** Статика `qa.tamir.rs` —
+   `nginx:1.27-alpine` из `qa-stack`, и её `location /` закрыт парой `allow` /
+   `deny all`. `cloudflared` — процесс хоста, его запрос к origin приходит с
+   адресом хоста, поэтому сеть хоста должна быть в `allow`, иначе весь
+   `qa.tamir.rs` отвечает `403`, хотя внутри контейнера тот же путь отдаёт `200`.
+   В `/opt/qa-stack/nginx/default.conf` сейчас разрешены `127.0.0.1`, `::1`,
+   `10.0.0.0/8`, `172.16.0.0/12` (docker bridge) и `192.168.0.0/16`, дальше —
+   `deny all`. Порт контейнера (`192.168.1.143:8090`) опубликован на хосте, поэтому
+   с рабочей машины проверка проходит, а с произвольного адреса в интернете — нет.
+3. **Рефы действий в workflow зафиксированы проверенными версиями.** В
+   `.github/workflows/qa-smoke.yml` используются `actions/checkout@v4`,
+   `astral-sh/setup-uv@v5`, `actions/upload-artifact@v4`,
+   `actions/download-artifact@v5`, `actions/setup-java@v4` — те, что точно
+   работают на этом self-hosted runner. Реф вида `astral-sh/setup-uv@v10` у части
+   экшенов отсутствует, и джоба падает ещё на шаге `Set up job`
+   («Unable to resolve action» / «unable to find version»). Поэтому обновления
+   приходят только PR от Dependabot (`.github/dependabot.yml`) и проверяются этим
+   же прогоном, а не правками в `main`.

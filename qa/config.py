@@ -15,9 +15,14 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 # Разрешённые хосты (M1): только стенд и локальная сеть стека на staging-хосте.
+# `qa.tamir.rs` и `tcms.tamir.rs` — это сервисы самого QA-стека на staging
+# (отчёты Allure и Kiwi TCMS), они нужны для интеграции в M2; прод-хосты Tamir
+# по-прежнему запрещены.
 ALLOWED_HOSTS: tuple[str, ...] = (
     "test.tamir.rs",
     "test-api.tamir.rs",
+    "qa.tamir.rs",
+    "tcms.tamir.rs",
     "192.168.1.143",
 )
 
@@ -101,10 +106,25 @@ class QaConfig:
     env: str
     web_url: str
     api_url: str
+    tcms_url: str = "https://tcms.tamir.rs"
+    reports_url: str = "https://qa.tamir.rs"
+    #: имя сборки в Kiwi TCMS — одно и то же значение используют seed и sync
+    build_name: str = "staging"
 
     @property
     def is_staging(self) -> bool:
         return self.env == "staging"
+
+    @property
+    def rpc_url(self) -> str:
+        """Точка RPC Kiwi TCMS: JSON-RPC 2.0 на `/json-rpc/`.
+
+        Проверено на нашей сборке 17.2: `/json-rpc/` и `/xml-rpc/` работают,
+        старый путь `/xml/` отвечает 400. JSON-RPC выбран как основной: он
+        описан в документации самой инстанс (`/static/api/`), а ответы читаются
+        без XML-декодирования.
+        """
+        return f"{self.tcms_url}/json-rpc/"
 
 
 def load_config() -> QaConfig:
@@ -113,8 +133,13 @@ def load_config() -> QaConfig:
         env=os.getenv("QA_ENV", "staging").strip() or "staging",
         web_url=os.getenv("WEB_URL", "https://test.tamir.rs").rstrip("/"),
         api_url=os.getenv("API_URL", "https://test-api.tamir.rs").rstrip("/"),
+        tcms_url=os.getenv("TCMS_URL", "https://tcms.tamir.rs").rstrip("/"),
+        reports_url=os.getenv("REPORTS_URL", "https://qa.tamir.rs").rstrip("/"),
+        build_name=os.getenv("QA_BUILD_NAME", "staging").strip() or "staging",
     )
     # Конфигурация не должна случайно указать на проду.
     require_allowed_target(config.web_url)
     require_allowed_target(config.api_url)
+    require_allowed_target(config.tcms_url)
+    require_allowed_target(config.reports_url)
     return config

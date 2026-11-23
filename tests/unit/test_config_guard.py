@@ -18,6 +18,9 @@ ALLOWED_URLS = [
     "https://test.tamir.rs/rs",
     "https://test-api.tamir.rs/store/products",
     "http://192.168.1.143:8025/api/messages",
+    # Сервисы самого QA-стека на staging: Kiwi TCMS (XML-RPC в M2) и отчёты.
+    "https://tcms.tamir.rs/xml-rpc/",
+    "https://qa.tamir.rs/latest/",
 ]
 
 PRODUCTION_URLS = [

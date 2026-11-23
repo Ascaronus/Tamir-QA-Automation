@@ -28,8 +28,12 @@ jobs:
     name: Прогон unit + smoke + api (self-hosted runner на staging)
     runs-on: [self-hosted, linux, tamir-qa]
     env:
-      # Единственный секрет конвейера — только имя; значение в GitHub Actions secrets.
+      # Значения — только в GitHub Actions secrets; здесь лишь имена переменных.
       MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
+      # Kiwi TCMS: сервисная учётка; её логин и пароль — в секретах репозитория.
+      TCMS_URL: ${{ secrets.TCMS_URL }}
+      TCMS_USER: ${{ secrets.TCMS_USER }}
+      TCMS_PASSWORD: ${{ secrets.TCMS_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,6 +100,29 @@ jobs:
           name: allure-results
           path: .tmp/allure-results/
           if-no-files-found: warn
+
+      # Каталог Kiwi TCMS приводится в соответствие коду на каждом прогоне main:
+      # seeder идемпотентен и ключуется по pytest nodeid (поле `script`).
+      # continue-on-error: недоступность TCMS не должна делать красным сам прогон —
+      # сбой виден в логе шага, а тесты на стенде прошли.
+      - name: Каталог тест-кейсов в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          python scripts/tcms_seed.py
+
+      # Результаты пишутся из Allure result-файлов (тот же источник, что и отчёт):
+      # TestExecution.create/update + ссылка на будущий отчёт этого прогона.
+      - name: Результаты прогона в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          python scripts/tcms_sync_results.py \
+            --report-url "https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/"
 
   qa-report:
     name: Сборка Allure-отчёта (GitHub-hosted, там есть Java)
