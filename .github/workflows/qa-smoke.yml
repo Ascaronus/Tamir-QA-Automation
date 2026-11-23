@@ -5,6 +5,8 @@ name: QA smoke (staging)
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       headed:
@@ -18,18 +20,52 @@ on:
 permissions:
   contents: read
 
+# Один прогон на ветку/PR: предыдущий снимается, чтобы self-hosted runner не
+# складывал очереди из бэшей Dependabot.
+concurrency:
+  group: qa-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
 # Версии действий берутся только теми, что уже отработали на этом раннере:
 # major-тега у части экшенов нет (setup-uv@v10 → "unable to find version"), а
 # обновляются они через Dependabot (.github/dependabot.yml), а не ручным
 # переписыванием в main.
 
 jobs:
+  # Проверка для pull_request (в т.ч. Dependabot): только офлайн-unit-тесты, на
+  # GitHub-hosted раннере, без сети, без секретов и без доступа к стенду. Это
+  # тот статус-чек, который требует защита ветки перед auto-merge.
+  qa-unit:
+    name: Офлайн unit-проверка (pull request)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей и запуск unit-тестов
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12
+          uv pip install -r requirements.txt
+          .venv/bin/pytest -m unit --junitxml=.tmp/junit.xml
+
   qa-smoke:
     name: Прогон unit + smoke + api (self-hosted runner на staging)
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, linux, tamir-qa]
     env:
-      # Единственный секрет конвейера — только имя; значение в GitHub Actions secrets.
+      # Значения — только в GitHub Actions secrets; здесь лишь имена переменных.
       MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
+      # Kiwi TCMS: сервисная учётка; её логин и пароль — в секретах репозитория.
+      TCMS_URL: ${{ secrets.TCMS_URL }}
+      TCMS_USER: ${{ secrets.TCMS_USER }}
+      TCMS_PASSWORD: ${{ secrets.TCMS_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           source .venv/bin/activate
-          pytest -m "unit or smoke or api" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
+          pytest -m "unit or smoke or api or seo or catalog" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
 
       # МетADATA отчёта: из чего и где получен прогон. Значений секретов здесь нет.
       - name: Метаданные для Allure
@@ -97,9 +133,33 @@ jobs:
           path: .tmp/allure-results/
           if-no-files-found: warn
 
+      # Каталог Kiwi TCMS приводится в соответствие коду на каждом прогоне main:
+      # seeder идемпотентен и ключуется по pytest nodeid (поле `script`).
+      # continue-on-error: недоступность TCMS не должна делать красным сам прогон —
+      # сбой виден в логе шага, а тесты на стенде прошли.
+      - name: Каталог тест-кейсов в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          python scripts/tcms_seed.py
+
+      # Результаты пишутся из Allure result-файлов (тот же источник, что и отчёт):
+      # TestExecution.create/update + ссылка на будущий отчёт этого прогона.
+      - name: Результаты прогона в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          python scripts/tcms_sync_results.py \
+            --report-url "https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/"
+
   qa-report:
     name: Сборка Allure-отчёта (GitHub-hosted, там есть Java)
     needs: qa-smoke
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Java 17 (нужна для Allure CLI)
