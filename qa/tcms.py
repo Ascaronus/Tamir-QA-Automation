@@ -12,14 +12,15 @@ Kiwi TCMS 17 отдаёт RPC на `POST /json-rpc/` (есть и `/xml-rpc/`, �
   ошибкой `-32098 Authentication failed`;
 - `params` в JSON-RPC передаются **позиционным списком**: `Product.filter`
   принимает `[{"name__exact": "Tamir"}]`, а не `{"query": {...}}` — именованные
-  параметры инстанс отклоняет с `-32600 Unsupported field`.
+  параметры инстанс отклоняет с `-32602 Invalid parameters`.
 
 Учётка бота берётся из секретов `TCMS_USER` / `TCMS_PASSWORD` (в CI) или из
 `.env` (локально); значения в репозиторий не попадают.
 
 Модуль умеет и читать (проверка, что интеграция жива, и данные для сверки), и
-писать результаты (`TestExecution.create` / `TestExecution.update`) — этот
-путь в TCMS 17 вместо удалённых в 15.3 `TestCaseRun.*` и `TestRun.store_*`.
+писать результаты (`TestExecution.create` / `TestExecution.update`) — в нашей
+сборке 17.2 другого пути нет: `TestCaseRun.*` и `TestRun.store_*` отвечают
+`-32601 Method not found`.
 """
 
 from __future__ import annotations

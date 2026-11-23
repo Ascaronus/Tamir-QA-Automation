@@ -2,10 +2,11 @@
 
 Kiwi TCMS — система управления тестированием: тест-кейсы, тест-планы, тест-раны.
 В этом репозитории с ней общается `qa/tcms.py` (клиент поверх JSON-RPC 2.0),
-живёт она на стенде `https://tcms.tamir.rs`. Это направление — M2, и часть уже
-сделана: есть клиент, сидинг каталога (`scripts/tcms_seed.py`) и читающие
-проверки `pytest -m tcms`. Запись результатов прогонов в TCMS и прогон этих
-тестов в CI — следующая итерация.
+живёт она на стенде `https://tcms.tamir.rs`. Это направление — M2, и оно уже
+работает: клиент, сидинг каталога (`scripts/tcms_seed.py`) и перенос результатов
+прогонов (`scripts/tcms_sync_results.py`) вшиты в джобу `qa-smoke` на `main`.
+Не закрыто только включение самих `tcms`-проверок в CI-набор — см.
+«Что осталось незакрытым».
 
 ## Где живёт стенд
 
@@ -32,8 +33,7 @@ IP-ограничений перед TCMS нет: allow-список из `/opt/
 Access для `tcms.tamir.rs` сегодня не включён, то есть адрес доступен снаружи.
 Данных это не отдаёт: сам Kiwi TCMS требует логин, и без `Auth.login` любой метод
 отвечает `-32098 Authentication failed` (проверено и на JSON-RPC, и на XML-RPC).
-Другой причины не гонять `tcms`-тесты из GitHub Actions, кроме отсутствия секретов
-в репозитории, нет — см. «Что мешает гонять это в CI».
+Что остаётся незакрытым в этом направлении — см. последний раздел.
 
 Вложения TCMS (скриншоты дефектов) лежат в volume `tcms-attachments`
 (`/mnt/kiwitcms` в контейнере) и раздаются тем же nginx-контейнером по адресу
@@ -102,9 +102,12 @@ JSON-RPC они не влияют. Клиент их пока не отправ�
 
 Каталог засеван, счётчики из `ping()` на момент написания: продукт 1, версии 2
 (`unspecified` и `staging`), категории 3 (`--default--`, `Storefront Smoke`,
-`Medusa API`), тест-кейсов 8 (все `is_automated`), тест-ран 1, билдов 3. Цифры
-меняются вместе с автотестами — ориентироваться надо на `scripts/tcms_seed.py`,
-а не на список ниже.
+`Medusa API`), тест-кейсов 8 (все `is_automated`), тест-ран 1, билдов 3.
+Исполнений (`TestExecution`) в тест-ране 8 — все `PASSED`, билд `staging`, к
+каждому ведут ссылки на отчёт (`https://qa.tamir.rs/7/`,
+`https://qa.tamir.rs/latest/`), то есть перенос результатов уже работал из CI.
+Цифры меняются от прогона к прогону — ориентироваться надо на
+`scripts/tcms_seed.py` и `scripts/tcms_sync_results.py`, а не на список ниже.
 
 | Модель | Статус в 17.2 |
 | --- | --- |
@@ -115,6 +118,7 @@ JSON-RPC они не влияют. Клиент их пока не отправ�
 | `TestCaseStatus` | 4 записи: `PROPOSED` (1), `CONFIRMED` (2), `DISABLED` (3), `NEED_UPDATE` (4) |
 | `TestExecution.create` / `TestExecution.update` | есть: аргументы `values` и `execution_id` соответственно |
 | `TestPlan.add_case` / `TestRun.add_case` | есть: `plan_id` + `case_id` и `run_id` + `case_id` |
+| `TestExecution.add_link` / `TestExecution.get_links` | есть — так к исполнению приклеивается ссылка на Allure-отчёт; у `TestCase` такого метода нет (`-32601`) |
 | `TestBuild` | `-32601` — в 17.2 модель называется `Build` |
 | `TestPlan.new` / `TestRun.new` | `-32601` — старые конструкторы удалены, создавать надо через `.create` |
 | `user.userId` | `-32601` — такого метода в 17.2 нет |
@@ -170,13 +174,15 @@ python scripts/tcms_sync_results.py --report-url https://qa.tamir.rs/latest/
   `passed→PASSED`, `failed→FAILED`, `broken→ERROR`, `skipped→BLOCKED`,
   `unknown→IDLE`; PK статусов берутся фильтром по имени, не константами.
 - Исполнение ищется фильтром `TestExecution.filter {run, case}` и обновляется
-  (`TestExecution.update`), иначе создаётся (`TestExecution.create`). В TCMS 15.3+
-  старых `TestCaseRun.*` нет — только `TestExecution`.
+  (`TestExecution.update`), иначе создаётся (`TestExecution.create`). Другого
+  пути в 17.2 нет: `TestCaseRun.*` и `TestRun.store_*` отвечают `-32601`.
 - К каждому исполнению добавляется ссылка на отчёт прогона
   (`TestExecution.add_link`), чтобы из карточки можно было открыть лог и скриншоты.
 - В CI оба скрипта (seed и sync) выполняются в конце джобы `qa-smoke` на прогонах
   `main`, с `continue-on-error: true`: сбой Kiwi TCMS не перекрашивает зелёный
-  прогон тестов, но виден в логе шага.
+  прогон тестов, но виден в логе шага. Это уже работает: в исполнениях лежат
+  ссылки на отчёт конкретного прогона (`https://qa.tamir.rs/7/`) и на
+  `https://qa.tamir.rs/latest/` — их добавляют сами скрипты.
 
 ## Переменные окружения
 
@@ -221,6 +227,7 @@ python -c "from qa.config import load_config; from qa.tcms import TcmsClient; pr
    настроить так, чтобы она не перекрывала RPC-вызовы из CI: либо bypass-правило
    по пути `/json-rpc/`, либо service token (`TCMS_ACCESS_*` в секретах) —
    так же, как для `test.tamir.rs` в Playwright-джобе.
-2. Маркер `tcms` в CI-набор пока не входит (`-m "unit or smoke or api"`):
-   живые проверки интеграции остаются локальными, пока не решён вопрос Access.
-   Запись результатов при этом работает из CI — ей хватает секретов репозитория.
+2. Маркер `tcms` в CI-набор пока не входит (`-m "unit or smoke or api"`), поэтому
+   читающие проверки интеграции остаются локальными. При этом сама работа с TCMS
+   из CI идёт с того же self-hosted runner: шаги сидинга и переноса результатов
+   в `qa-smoke` работают и секретов репозитория им хватает.
