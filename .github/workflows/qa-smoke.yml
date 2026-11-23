@@ -5,6 +5,8 @@ name: QA smoke (staging)
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       headed:
@@ -18,14 +20,44 @@ on:
 permissions:
   contents: read
 
+# Один прогон на ветку/PR: предыдущий снимается, чтобы self-hosted runner не
+# складывал очереди из бэшей Dependabot.
+concurrency:
+  group: qa-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
 # Версии действий берутся только теми, что уже отработали на этом раннере:
 # major-тега у части экшенов нет (setup-uv@v10 → "unable to find version"), а
 # обновляются они через Dependabot (.github/dependabot.yml), а не ручным
 # переписыванием в main.
 
 jobs:
+  # Проверка для pull_request (в т.ч. Dependabot): только офлайн-unit-тесты, на
+  # GitHub-hosted раннере, без сети, без секретов и без доступа к стенду. Это
+  # тот статус-чек, который требует защита ветки перед auto-merge.
+  qa-unit:
+    name: Офлайн unit-проверка (pull request)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей и запуск unit-тестов
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12
+          uv pip install -r requirements.txt
+          .venv/bin/pytest -m unit --junitxml=.tmp/junit.xml
+
   qa-smoke:
     name: Прогон unit + smoke + api (self-hosted runner на staging)
+    if: github.event_name != 'pull_request'
     runs-on: [self-hosted, linux, tamir-qa]
     env:
       # Значения — только в GitHub Actions secrets; здесь лишь имена переменных.
@@ -58,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           source .venv/bin/activate
-          pytest -m "unit or smoke or api" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
+          pytest -m "unit or smoke or api or seo or catalog" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
 
       # МетADATA отчёта: из чего и где получен прогон. Значений секретов здесь нет.
       - name: Метаданные для Allure
@@ -127,6 +159,7 @@ jobs:
   qa-report:
     name: Сборка Allure-отчёта (GitHub-hosted, там есть Java)
     needs: qa-smoke
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Java 17 (нужна для Allure CLI)

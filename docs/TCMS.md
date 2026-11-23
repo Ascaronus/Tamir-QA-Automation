@@ -211,7 +211,7 @@ pytest -m tcms
 Живые проверки — `tests/api/test_tcms_api.py`: доступность RPC и версия, что
 адрес действительно `tcms.tamir.rs/json-rpc/`, что продукт `Tamir` и каталог
 засеваны и что справочник статусов исполнений читается. Маркер `tcms`
-зарегистрирован в `pytest.ini`, в CI-набор (`-m "unit or smoke or api"`) он пока
+зарегистрирован в `pytest.ini`, в CI-набор (`-m "unit or smoke or api or seo or catalog"`) он пока
 не входит. Без учётки тесты скипаются (`TcmsUnavailable`), а не падают, поэтому
 отсутствие секретов прогон не ломает. Быстрая проверка руками:
 
@@ -227,7 +227,7 @@ python -c "from qa.config import load_config; from qa.tcms import TcmsClient; pr
    настроить так, чтобы она не перекрывала RPC-вызовы из CI: либо bypass-правило
    по пути `/json-rpc/`, либо service token (`TCMS_ACCESS_*` в секретах) —
    так же, как для `test.tamir.rs` в Playwright-джобе.
-2. Маркер `tcms` в CI-набор пока не входит (`-m "unit or smoke or api"`), поэтому
+2. Маркер `tcms` в CI-набор пока не входит (`-m "unit or smoke or api or seo or catalog"`), поэтому
    читающие проверки интеграции остаются локальными. При этом сама работа с TCMS
    из CI идёт с того же self-hosted runner: шаги сидинга и переноса результатов
    в `qa-smoke` работают и секретов репозитория им хватает.

@@ -9,7 +9,7 @@ Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на то
 развернут стек отчётов (`/opt/qa-stack`). Он:
 
 1. ставит зависимости через `uv` (`uv venv --python 3.12`, `uv pip install -r requirements.txt`);
-2. запускает **одним** вызовом `pytest -m "unit or smoke or api" --junitxml=.tmp/junit.xml`
+2. запускает **одним** вызовом `pytest -m "unit or smoke or api or seo or catalog" --junitxml=.tmp/junit.xml`
    (`unit` — офлайн-проверки самого репозитория, они идут первыми). Один вызов важен:
    `--clean-alluredir` из `addopts` стирал бы результаты предыдущего запуска;
 3. пишет в `.tmp/allure-results` файлы `environment.properties` и `executor.json` —
