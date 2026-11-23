@@ -50,7 +50,8 @@ cp -a .tmp/allure-report/. /opt/qa-stack/reports/latest/
 ```
 
 После этого шаг вызывает `qa/publish_runs_index.py`, который обновляет
-`/opt/qa-stack/json/runs.json` — индекс прогонов для фронтенда `https://qa.tamir.rs`.
+`/opt/qa-stack/reports/json/runs.json` — индекс прогонов для фронтенда
+`https://qa.tamir.rs` (он же отдаётся как `https://qa.tamir.rs/json/runs.json`).
 
 ### Доступные URL отчёта
 
@@ -63,8 +64,8 @@ cp -a .tmp/allure-report/. /opt/qa-stack/reports/latest/
 
 ### Права на каталоги
 
-Runner на staging работает под пользователем `actions-runner`, и каталоги
-`/opt/qa-stack/reports`, `/opt/qa-stack/json` принадлежат `actions-runner`.
+Runner на staging работает под пользователем `actions-runner`, и каталог
+`/opt/qa-stack/reports` (вместе с подкаталогом `json`) принадлежит `actions-runner`.
 Поэтому публикация идёт обычным `cp` и обычным скриптом: **без sudo и без SSH**
 (runner физически находится на том же хосте, где лежит каталог отчётов).
 
@@ -97,7 +98,7 @@ staging-хосте:
 
 ```bash
 python3 qa/publish_runs_index.py \
-  --reports-dir /opt/qa-stack \
+  --reports-dir /opt/qa-stack/reports \
   --run-number 43 \
   --branch main \
   --commit 0a1b2c3 \
