@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Установка uv
         uses: astral-sh/setup-uv@v5
@@ -68,7 +68,7 @@ jobs:
       TCMS_PASSWORD: ${{ secrets.TCMS_PASSWORD }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Установка uv
         uses: astral-sh/setup-uv@v5
@@ -195,7 +195,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Скачивание отчёта
         uses: actions/download-artifact@v5
