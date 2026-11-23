@@ -15,9 +15,14 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 # Разрешённые хосты (M1): только стенд и локальная сеть стека на staging-хосте.
+# `qa.tamir.rs` и `tcms.tamir.rs` — это сервисы самого QA-стека на staging
+# (отчёты Allure и Kiwi TCMS), они нужны для интеграции в M2; прод-хосты Tamir
+# по-прежнему запрещены.
 ALLOWED_HOSTS: tuple[str, ...] = (
     "test.tamir.rs",
     "test-api.tamir.rs",
+    "qa.tamir.rs",
+    "tcms.tamir.rs",
     "192.168.1.143",
 )
 
@@ -53,6 +58,29 @@ def _is_production_host(host: str) -> bool:
 
 def _is_allowed_host(host: str) -> bool:
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in ALLOWED_HOSTS)
+
+
+# Публичный origin, который приложение подставляет в canonical/hreflang и sitemap.
+# Продуктовое SEO считает публичным только `tamir.rs` (см. `PUBLIC_SITE_ORIGIN`
+# в `frontend/src/lib/seo.ts`), поэтому на стенде canonical и alternates всегда
+# ведут на прод-домен, хотя сами запросы идут на `test.tamir.rs`. Проверять это
+# надо по таблице, а не по хосту запроса. None (хоста нет в таблице) означает
+# «canonical ожидается на том же origin, откуда отвечает сервер».
+STAGING_SITE_ORIGINS: dict[str, str] = {
+    "test.tamir.rs": "https://tamir.rs",
+}
+
+
+def site_origin_for(web_url: str) -> str | None:
+    """Публичный origin для SEO-атрибутов данного web-адреса, либо None.
+
+    None значит «атрибуты должны совпадать с самим `web_url`» — так ведут себя
+    локальные прогоны против `localhost`.
+    """
+    host = _host_of(web_url)
+    if not host:
+        return None
+    return STAGING_SITE_ORIGINS.get(host)
 
 
 def is_allowed_target(url: str) -> bool:
@@ -101,10 +129,43 @@ class QaConfig:
     env: str
     web_url: str
     api_url: str
+    tcms_url: str = "https://tcms.tamir.rs"
+    reports_url: str = "https://qa.tamir.rs"
+    #: имя сборки в Kiwi TCMS — одно и то же значение используют seed и sync
+    build_name: str = "staging"
 
     @property
     def is_staging(self) -> bool:
         return self.env == "staging"
+
+    @property
+    def site_origin(self) -> str:
+        """Origin, который должен стоять в canonical/hreflang этого web-адреса.
+
+        На стенде это публичный `https://tamir.rs`, а не `test.tamir.rs`:
+        SEO-атрибуты продуктовый код считает по публичному домену.
+        """
+        return site_origin_for(self.web_url) or self.web_url
+
+    @property
+    def expects_noindex(self) -> bool:
+        """True, когда окружение должно быть закрыто от поисковых систем.
+
+        Любой non-prod (в том числе staging по умолчанию) обязан отдавать
+        `noindex`, иначе тестовый индекс начнёт каннибалить боевой.
+        """
+        return not os.getenv("QA_IS_PRODUCTION", "").strip() in ("1", "true", "yes")
+
+    @property
+    def rpc_url(self) -> str:
+        """Точка RPC Kiwi TCMS: JSON-RPC 2.0 на `/json-rpc/`.
+
+        Проверено на нашей сборке 17.2: `/json-rpc/` и `/xml-rpc/` работают,
+        старый путь `/xml/` отвечает 400. JSON-RPC выбран как основной: он
+        описан в документации самой инстанс (`/static/api/`), а ответы читаются
+        без XML-декодирования.
+        """
+        return f"{self.tcms_url}/json-rpc/"
 
 
 def load_config() -> QaConfig:
@@ -113,8 +174,13 @@ def load_config() -> QaConfig:
         env=os.getenv("QA_ENV", "staging").strip() or "staging",
         web_url=os.getenv("WEB_URL", "https://test.tamir.rs").rstrip("/"),
         api_url=os.getenv("API_URL", "https://test-api.tamir.rs").rstrip("/"),
+        tcms_url=os.getenv("TCMS_URL", "https://tcms.tamir.rs").rstrip("/"),
+        reports_url=os.getenv("REPORTS_URL", "https://qa.tamir.rs").rstrip("/"),
+        build_name=os.getenv("QA_BUILD_NAME", "staging").strip() or "staging",
     )
     # Конфигурация не должна случайно указать на проду.
     require_allowed_target(config.web_url)
     require_allowed_target(config.api_url)
+    require_allowed_target(config.tcms_url)
+    require_allowed_target(config.reports_url)
     return config
