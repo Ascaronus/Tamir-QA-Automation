@@ -44,6 +44,8 @@ BUILD_NAME = "staging"
 AREAS: dict[str, tuple[str, str]] = {
     "smoke": ("Storefront Smoke", "P2"),
     "api": ("Medusa API", "P3"),
+    "seo": ("Storefront SEO", "P2"),
+    "catalog": ("Catalog & Search", "P3"),
 }
 
 CASE_MARKERS = tuple(AREAS)
