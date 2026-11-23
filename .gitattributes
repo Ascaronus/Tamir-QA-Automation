@@ -1,0 +1,4 @@
+# .editorconfig требует LF; на Windows это снимает риск CRLF в рабочих копиях.
+* text=auto eol=lf
+*.png binary
+*.jpg binary

@@ -1,0 +1,10 @@
+pytest>=8.0
+pytest-playwright>=0.5
+requests>=2.32
+allure-pytest>=2.13
+python-dotenv>=1.0
+PyYAML>=6.0
+
+# kiwitcms-pytest-plugin подключаем не сейчас, а в M2: интеграция с Kiwi TCMS
+# (https://tcms.tamir.rs) идёт через XML-RPC эндпоинт /xml-rpc/, в M1 только smoke
+# и API-контракты. PyYAML тоже резервируем под M2 (тестовые данные и конфиги).

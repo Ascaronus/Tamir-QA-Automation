@@ -1,0 +1,130 @@
+name: QA smoke (staging)
+
+# Прод не трогается: тесты ходят только на staging-цели из docs/ENVIRONMENTS.md,
+# а guard в qa/config.py не пустит запросы на tamir.rs / www.tamir.rs / api.tamir.rs.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      headed:
+        description: "Браузер с интерфейсом (актуально для e2e в M2)"
+        type: boolean
+        default: false
+  schedule:
+    # Ночной прогон на буднях
+    - cron: "0 5 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  qa-smoke:
+    name: Прогон smoke + api (self-hosted runner на staging)
+    runs-on: [self-hosted, linux, tamir-qa]
+    env:
+      # Единственный секрет конвейера — только имя; значение в GitHub Actions secrets.
+      MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей через uv
+        run: |
+          set -euo pipefail
+          # .venv в каталоге прогона; интерпретатор — системный Python 3.12 стенда.
+          uv venv --python 3.12
+          uv pip install -r requirements.txt
+          # Нужно для e2e в M2; в M1 браузерные тесты ещё не пишутся.
+          .venv/bin/playwright install chromium
+
+      - name: Запуск проверок
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          pytest -m "smoke or api" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
+
+      - name: Загрузка Allure-результатов
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: allure-results
+          path: .tmp/allure-results/
+          if-no-files-found: warn
+
+  qa-report:
+    name: Сборка Allure-отчёта (GitHub-hosted, там есть Java)
+    needs: qa-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Java 17 (нужна для Allure CLI)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Установка Allure CLI
+        run: npm i -g allure-commandline
+
+      - name: Скачивание результатов
+        uses: actions/download-artifact@v4
+        with:
+          name: allure-results
+          path: .tmp/allure-results
+
+      - name: Генерация отчёта
+        run: allure generate .tmp/allure-results -o .tmp/allure-report --clean
+
+      - name: Загрузка отчёта
+        uses: actions/upload-artifact@v4
+        with:
+          name: allure-report
+          path: .tmp/allure-report/
+
+  qa-publish:
+    name: Публикация отчёта на qa.tamir.rs
+    # qa-smoke добавлен в needs ради честного статуса: conclusion прогона тестов
+    # берётся из него, а needs-context содержит только перечисленные джобы.
+    needs: [qa-report, qa-smoke]
+    runs-on: [self-hosted, linux, tamir-qa]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Скачивание отчёта
+        uses: actions/download-artifact@v4
+        with:
+          name: allure-report
+          path: .tmp/allure-report
+
+      # SSH и sudo не нужны: runner работает под actions-runner, которому
+      # принадлежит каталог /opt/qa-stack/reports (он же корень раздачи nginx),
+      # а сам runner живёт на том же хосте, что и каталог отчётов.
+      - name: Копирование отчёта в каталог отчётов
+        run: |
+          set -euo pipefail
+          RUN_DIR="/opt/qa-stack/reports/${GITHUB_RUN_NUMBER}"
+          LATEST_DIR="/opt/qa-stack/reports/latest"
+          mkdir -p "${RUN_DIR}"
+          rm -rf "${RUN_DIR:?}/"*
+          cp -a .tmp/allure-report/. "${RUN_DIR}/"
+          rm -rf "${LATEST_DIR}"
+          mkdir -p "${LATEST_DIR}"
+          cp -a .tmp/allure-report/. "${LATEST_DIR}/"
+
+      - name: Обновление индекса прогонов runs.json
+        run: |
+          set -euo pipefail
+          python3 qa/publish_runs_index.py \
+            --reports-dir /opt/qa-stack/reports \
+            --run-number "${GITHUB_RUN_NUMBER}" \
+            --branch "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --status "${{ needs.qa-smoke.result }}"

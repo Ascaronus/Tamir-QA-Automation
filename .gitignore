@@ -1,0 +1,24 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Артефакты прогонов и отчётов
+.tmp/
+allure-results/
+allure-report/
+allure_history/
+junit.xml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Локальные переменные окружения (секретов в репозитории нет и не будет)
+.env
+.env.*
+!.env.example
