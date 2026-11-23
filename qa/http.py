@@ -52,14 +52,26 @@ class QaHttpClient:
         require_allowed_target(response.url)
         return response
 
-    def request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        publishable_key: bool = True,
+        **kwargs: Any,
+    ) -> requests.Response:
         url = self.build_url(path)
         # Guard перед каждым запросом: случайный редирект/опечатка не уведёт на прод.
         require_allowed_target(url)
 
         headers = dict(kwargs.pop("headers", None) or {})
-        for name, value in self._publishable_headers().items():
-            headers.setdefault(name, value)
+        if publishable_key:
+            for name, value in self._publishable_headers().items():
+                headers.setdefault(name, value)
+        else:
+            # Негативная ветка контракта: заголовка не должно быть, даже если
+            # ключ задан в окружении (в CI он приходит как секрет).
+            headers = {k: v for k, v in headers.items() if k.lower() != PUBLISHABLE_KEY_HEADER}
 
         kwargs.setdefault("timeout", self.timeout)
         hooks = dict(kwargs.pop("hooks", None) or {})

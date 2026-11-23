@@ -19,9 +19,9 @@ pytestmark = pytest.mark.api
 
 @allure.step("GET /store/products без ключа отвечает 400 not_allowed")
 def test_products_without_publishable_key_is_rejected(api_client: QaHttpClient) -> None:
-    # Ключа в запросе намеренно нет: QaHttpClient не подставит заголовок,
-    # если переменная окружения не задана.
-    response = api_client.get("/store/products?limit=1")
+    # Заголовок намеренно подаётся как отсутствующий: в CI ключ задан как секрет
+    # и QaHttpClient подставил бы его сам, поэтому просим явный отказ от ключа.
+    response = api_client.get("/store/products?limit=1", publishable_key=False)
 
     assert response.status_code == 400, (
         f"/store/products без ключа вернул {response.status_code}, ожидался 400"
