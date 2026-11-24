@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from qa import net  # noqa: E402
 from qa.config import load_config  # noqa: E402
 from qa.http import QaHttpClient  # noqa: E402
 from qa.medusa_admin import MedusaAdminClient, MedusaAdminError  # noqa: E402
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     config = load_config()
+    net.install_from_config(config)
     with QaHttpClient(config.api_url) as client:
         admin = MedusaAdminClient(client)
         try:

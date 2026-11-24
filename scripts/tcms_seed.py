@@ -37,6 +37,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from qa import net  # noqa: E402
 from qa.config import load_config  # noqa: E402
 from qa.tcms import TcmsClient, TcmsError  # noqa: E402
 from scripts.steps_dump import (  # noqa: E402
@@ -269,7 +270,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  [{case['area']}/{case['text_source']}] {case['nodeid']}\n      {first}")
         return 0
 
-    client = TcmsClient.from_environment(load_config())
+    config = load_config()
+    net.install_from_config(config)
+    client = TcmsClient.from_environment(config)
     print(f"Kiwi TCMS {client.call('KiwiTCMS.version')} — {client.url}")
 
     user = client.rows("User", {"username__exact": client.user})

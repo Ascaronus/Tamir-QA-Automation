@@ -59,3 +59,8 @@ def install_getaddrinfo_patch(overrides: Mapping[str, str]) -> None:
 
     getaddrinfo._qa_overrides = True  # type: ignore[attr-defined]
     socket.getaddrinfo = getaddrinfo  # type: ignore[assignment]
+
+
+def install_from_config(config: object) -> None:
+    """Применяет подмены из конфига — чтобы скрипты читали тот же `.env`, что и тесты."""
+    install_getaddrinfo_patch(getattr(config, "host_overrides", None) or {})

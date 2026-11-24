@@ -47,6 +47,7 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from qa import net  # noqa: E402
 from qa.config import load_config  # noqa: E402
 from qa.tcms import TcmsClient, TcmsError, TcmsUnavailable  # noqa: E402
 from scripts.steps_dump import (  # noqa: E402
@@ -109,6 +110,7 @@ def main() -> int:
 
     load_dotenv()
     config = load_config()
+    net.install_from_config(config)
     results_dir = Path(args.results)
     if not results_dir.is_dir():
         print(f"Нет каталога результатов: {results_dir}", file=sys.stderr)
