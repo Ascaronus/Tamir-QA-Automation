@@ -12,6 +12,11 @@
 Ссылка на Allure-отчёт добавляется через ``TestExecution.add_link``, чтобы из
 карточки исполнения было видно лог и скриншоты.
 
+Заодно прогон обновляет текст кейсов (``case_text``): шаги, которые тест описал
+фикстурой ``steps``, лежат в ``.tmp/steps.json``, и именно они показываются в
+карточке кейса как «действие → ожидание».  Запасной текст отсюда не пишется —
+подтвердить его нечем, поэтому без настоящих шагов кейс остаётся как есть.
+
 Запуск (локально или в CI):
 
     python scripts/tcms_sync_results.py --report-url https://qa.tamir.rs/latest/
@@ -19,6 +24,7 @@
 Параметры:
 
     --results DIR     каталог Allure results (по умолчанию .tmp/allure-results)
+    --steps-file F    шаги из прогона (по умолчанию .tmp/steps.json)
     --report-url URL  ссылка на отчёт; добавляется к исполнениям
     --build NAME      имя сборки (по умолчанию BUILD_NAME из конфига = "staging")
     --dry-run         только показать, что будет сделано
@@ -43,7 +49,12 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from qa.config import load_config  # noqa: E402
 from qa.tcms import TcmsClient, TcmsError, TcmsUnavailable  # noqa: E402
-from scripts.tcms_seed import PLAN_NAME  # noqa: E402
+from scripts.steps_dump import (  # noqa: E402
+    DEFAULT_STEPS_FILE,
+    case_text_from_steps,
+    load_recorded_steps,
+)
+from scripts.tcms_seed import LEGACY_PLAN_NAMES, PLAN_NAME  # noqa: E402
 
 #: статусы Allure -> имена TestExecutionStatus (PK берём из справочника по имени)
 STATUS_BY_ALLURE = {
@@ -86,6 +97,11 @@ def script_of(result: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="pytest -> Kiwi TCMS")
     parser.add_argument("--results", default=".tmp/allure-results")
+    parser.add_argument(
+        "--steps-file",
+        default=DEFAULT_STEPS_FILE,
+        help=f"шаги из прогона, пишет pytest_sessionfinish (по умолчанию {DEFAULT_STEPS_FILE})",
+    )
     parser.add_argument("--report-url", default="")
     parser.add_argument("--build", default="")
     parser.add_argument("--dry-run", action="store_true")
@@ -103,6 +119,10 @@ def main() -> int:
         print(f"В {results_dir} нет *-result.json", file=sys.stderr)
         return 2
 
+    # Шаги этого же прогона: они же текст кейсов.  Файла может не быть (например,
+    # тесты запускали без фикстуры steps) — тогда тексты не трогаем.
+    recorded = load_recorded_steps(args.steps_file)
+
     try:
         client = TcmsClient.from_environment(config)
         client.login()
@@ -113,6 +133,15 @@ def main() -> int:
     status_pk = {name: client.status_id(name) for name in set(STATUS_BY_ALLURE.values())}
 
     plan = client.find("TestPlan", name__exact=PLAN_NAME)
+    if plan is None:
+        # Живой план мог остаться со старым именем: сидинг переименовывает его,
+        # а не создаёт второй. Ищем по старому имени, чтобы перенос результатов
+        # не падал до сидинга и писал в тот же план с историей исполнений.
+        for old_name in LEGACY_PLAN_NAMES:
+            plan = client.find("TestPlan", name__exact=old_name)
+            if plan is not None:
+                print(f"  ! план ещё называется {old_name!r} — запустите scripts/tcms_seed.py", file=sys.stderr)
+                break
     if plan is None:
         print(f"Нет тест-плана {PLAN_NAME!r} — сначала scripts/tcms_seed.py", file=sys.stderr)
         return 2
@@ -128,6 +157,7 @@ def main() -> int:
         return 2
 
     created = updated = linked = unmapped = 0
+    texts = 0
     for result in results:
         script = script_of(result)
         if not script:
@@ -139,6 +169,22 @@ def main() -> int:
             # собственная проверка интеграции с TCMS
             unmapped += 1
             continue
+
+        # Текст кейса обновляем до исполнения: у нового исполнения case_text_version
+        # должен ссылаться на тот текст, против которого тест шёл.  Пишем только
+        # настоящие шаги прогона — запасной текст тут не подтверждён ничем.
+        steps_text = case_text_from_steps(recorded.get(script, []))
+        if steps_text and steps_text != (case.get("case_text") or ""):
+            texts += 1
+            if args.dry_run:
+                print(f"  case_text: TestCase {case['id']} <- {len(steps_text.splitlines())} шагов прогона")
+            else:
+                refreshed = client.update("TestCase", int(case["id"]), {"case_text": steps_text})
+                # TCMS отдаёт обновлённый кейс целиком — берём из него case_version,
+                # чтобы новое исполнение ссылалось на свежий текст.  Если ответ
+                # пустой, оставляем прежний кейс: статус важнее версии текста.
+                if isinstance(refreshed, dict):
+                    case = refreshed
 
         status_name = STATUS_BY_ALLURE.get(result.get("status"), "IDLE")
         values = {"status": status_pk[status_name], "build": build["id"]}
@@ -168,7 +214,7 @@ def main() -> int:
     print(
         f"TCMS: план {plan['id']}, прогон {run['id']}, сборка {build['id']}; "
         f"создано {created}, обновлено {updated}, ссылок {linked}, "
-        f"вне каталога {unmapped}, результатов {len(results)}"
+        f"текст кейсов обновлён {texts}, вне каталога {unmapped}, результатов {len(results)}"
     )
     print(f"Смотреть в Kiwi TCMS: Test Runs -> {run['summary']}")
     return 0

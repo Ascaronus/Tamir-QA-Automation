@@ -8,13 +8,21 @@
 кейсы находятся при повторном запуске.
 
 Скрипт идемпотентен: справочники и продукт ищутся по имени, кейсы — по `script`,
-существующие кейсы обновляются (summary/text/script/приоритет), план и тест-ран
-дополняются новыми кейсами. Повторный запуск не создаёт дублей.
+существующие кейсы обновляются (summary/text/case_text/script/приоритет), план и
+тест-ран дополняются новыми кейсами. Повторный запуск не создаёт дублей.
+
+Текст кейса (`case_text`, «действие;ожидание» на шаг) берётся из шагов, которые
+прогон оставил в `.tmp/steps.json` (его пишет `pytest_sessionfinish`, см.
+`tests/conftest.py` и `qa/steps.py`). Порядок такой: сначала прогон, потом сидинг —
+и в каталоге оказываются настоящие шаги сценария, а не пересказ докстринга. Если
+шагов этого теста в файле нет, seeder откатывается на первую строку докстринга, а
+без докстринга — на имя теста: кейса без текста в каталоге быть не должно.
 
 Запуск (учётка бота берётся из `TCMS_URL`/`TCMS_USER`/`TCMS_PASSWORD`):
 
-    python scripts/tcms_seed.py            # сеять
-    python scripts/tcms_seed.py --dry-run  # только показать каталог
+    python scripts/tcms_seed.py                        # сеять
+    python scripts/tcms_seed.py --dry-run              # только показать каталог
+    python scripts/tcms_seed.py --steps-file .tmp/steps.json
 """
 
 from __future__ import annotations
@@ -31,17 +39,35 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from qa.config import load_config  # noqa: E402
 from qa.tcms import TcmsClient, TcmsError  # noqa: E402
+from scripts.steps_dump import (  # noqa: E402
+    DEFAULT_STEPS_FILE,
+    case_text_from_steps,
+    fallback_text,
+    load_recorded_steps,
+)
 
 PRODUCT = "Tamir"
 CLASSIFICATION = "Tamir Balkan"
 VERSION = "staging"
-PLAN_NAME = "Staging Smoke — Tamir"
-PLAN_TYPE = "Smoke"
-RUN_SUMMARY = "Staging Smoke — базовый прогон"
+PLAN_NAME = "Staging Regression — Tamir"
+PLAN_TEXT = (
+    "Регресс тестового стенда Tamir: браузерные пользовательские сценарии (E2E), "
+    "сценарии оформления заказа на бэкенде и проверки витрины/API. Каталог кейсов "
+    "синхронизирован scripts/tcms_seed.py, исполнения пишет scripts/tcms_sync_results.py."
+)
+RUN_SUMMARY = "Staging Regression — пользовательские сценарии и проверки"
 BUILD_NAME = "staging"
 
+#: старые имена плана и рана: их не плодим заново, а переименовываем существующие
+LEGACY_PLAN_NAMES = ("Staging Smoke — Tamir",)
+LEGACY_RUN_SUMMARIES = ("Staging Smoke — базовый прогон",)
+
 #: маркер pytest -> (категория в TCMS, приоритет)
+#: порядок важен: у теста может быть несколько маркеров, выигрывает первый из списка,
+#: поэтому сценарии (e2e/scenario) важнее smoke/api-проверок того же теста
 AREAS: dict[str, tuple[str, str]] = {
+    "e2e": ("User Journeys E2E", "P1"),
+    "scenario": ("Checkout Scenarios", "P1"),
     "smoke": ("Storefront Smoke", "P2"),
     "api": ("Medusa API", "P3"),
     "seo": ("Storefront SEO", "P2"),
@@ -76,6 +102,10 @@ def collect_cases(root: Path = REPO_ROOT) -> list[dict[str, str]]:
                         "area": area,
                         "summary": first_line or item.name.replace("_", " "),
                         "doc": doc,
+                        # текст кейса заполняет attach_case_texts: он знает про
+                        # шаги прогона, а коллектор — только про код
+                        "case_text": "",
+                        "text_source": "",
                     }
                 )
 
@@ -92,11 +122,33 @@ def collect_cases(root: Path = REPO_ROOT) -> list[dict[str, str]]:
     return collector.items
 
 
-def ensure(client: TcmsClient, model: str, match: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
-    """Находит сущность по `match`, создаёт, если её нет."""
+def ensure(
+    client: TcmsClient,
+    model: str,
+    match: dict[str, Any],
+    values: dict[str, Any],
+    *,
+    legacy: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Находит сущность по `match`, создаёт, если её нет.
+
+    `legacy` — старые имена (для `name`/`summary`): вместо второй записи с тем же
+    смыслом переименовываем старую, чтобы план и ран сохранили историю
+    исполнений и ссылки на отчёты.
+    """
     found = client.rows(model, match)
     if found:
         return found[0]
+    if legacy and len(match) == 1:
+        (field, _wanted), = match.items()
+        base = field.split("__", 1)[0]
+        for old in legacy:
+            stale = client.rows(model, {f"{base}__exact": old})
+            if not stale:
+                continue
+            renamed = client.update(model, int(stale[0]["id"]), {base: values[base]})
+            print(f"  ~ {model} {renamed['id']}: переименован из {old!r}")
+            return renamed
     created = client.create(model, values)
     print(f"  + {model}: {values.get('name') or values.get('value') or values.get('summary')}")
     return created
@@ -114,6 +166,7 @@ def sync_case(
     client: TcmsClient,
     case: dict[str, str],
     *,
+    case_text: str,
     category_id: int,
     priority_id: int,
     status_id: int,
@@ -124,6 +177,9 @@ def sync_case(
     values = {
         "summary": case["summary"][:255],
         "text": case["doc"] or case["nodeid"],
+        # case_text — шаги кейса «действие;ожидание»: так кейс читается как
+        # инструкция, а не как строка из вывода pytest
+        "case_text": case_text,
         "script": case["nodeid"],
         "is_automated": True,
         "category": category_id,
@@ -164,16 +220,53 @@ def attach_cases(
     return added
 
 
+def attach_case_texts(cases: list[dict[str, str]], steps_file: str | None) -> dict[str, int]:
+    """Заполняет `case_text` кейсов: шаги прогона, иначе докстринг, иначе имя теста.
+
+    Возвращает счётчик источников — по нему видно, сколько кейсов действительно
+    описаны шагами, а сколько живут на запасном варианте.
+    """
+    recorded = load_recorded_steps(steps_file)
+    counts: dict[str, int] = {}
+    for case in cases:
+        text = case_text_from_steps(recorded.get(case["nodeid"], []))
+        source = "steps"
+        if not text:
+            text = fallback_text(case["name"], case["doc"])
+            source = "docstring" if case["doc"] else "name"
+        case["case_text"] = text
+        case["text_source"] = source
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def plan_type_id(client: TcmsClient) -> int:
+    """Тип плана: регресс, но без жёсткой привязки к справочнику Kiwi."""
+    for name in ("Regression Sys. Test", "Regression", "Smoke Test", "Smoke"):
+        try:
+            return reference_id(client, "PlanType", "name", name)
+        except TcmsError:
+            continue
+    raise TcmsError("Kiwi TCMS не знает ни одного подходящего PlanType")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="сеет каталог Kiwi TCMS по автотестам")
     parser.add_argument("--dry-run", action="store_true", help="только показать, что будет в TCMS")
+    parser.add_argument(
+        "--steps-file",
+        default=DEFAULT_STEPS_FILE,
+        help=f"шаги из прогона, пишет pytest_sessionfinish (по умолчанию {DEFAULT_STEPS_FILE})",
+    )
     args = parser.parse_args(argv)
 
     cases = collect_cases()
-    print(f"собрано кейсов: {len(cases)}")
+    counts = attach_case_texts(cases, args.steps_file)
+    print(f"собрано кейсов: {len(cases)}, шаги: {counts}")
     if args.dry_run:
         for case in cases:
-            print(f"  [{case['area']}] {case['nodeid']}")
+            first = case["case_text"].splitlines()[0] if case["case_text"] else ""
+            print(f"  [{case['area']}/{case['text_source']}] {case['nodeid']}\n      {first}")
         return 0
 
     client = TcmsClient.from_environment(load_config())
@@ -206,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     version_id = int(version["id"])
 
     confirmed_id = reference_id(client, "TestCaseStatus", "name", "CONFIRMED")
-    plan_type_id = reference_id(client, "PlanType", "name", PLAN_TYPE)
+    ptype_id = plan_type_id(client)
 
     categories: dict[str, int] = {}
     priorities: dict[str, int] = {}
@@ -225,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
         created = sync_case(
             client,
             case,
+            case_text=case["case_text"],
             category_id=categories[case["area"]],
             priority_id=priorities[case["area"]],
             status_id=confirmed_id,
@@ -241,12 +335,18 @@ def main(argv: list[str] | None = None) -> int:
             "name": PLAN_NAME,
             "product": product_id,
             "product_version": version_id,
-            "type": plan_type_id,
+            "type": ptype_id,
             "author": author_id,
-            "text": "Смок-проверки тестового стенда Tamir; кейсы синхронизированы scripts/tcms_seed.py.",
+            "text": PLAN_TEXT,
         },
+        legacy=LEGACY_PLAN_NAMES,
     )
     plan_id = int(plan["id"])
+    try:
+        # план мог быть переименован из старого — описание синхронизируем всегда
+        client.call("TestPlan.update", plan_id, {"text": PLAN_TEXT})
+    except TcmsError as exc:
+        print(f"  ! TestPlan.update({plan_id}, text): {exc}")
     plan_cases = {int(row["id"]) for row in client.rows("TestCase", {"plan__exact": plan_id})}
     print(f"  кейсов в плане {plan_id}: было {len(plan_cases)}, добавлено {attach_cases(client, 'TestPlan.add_case', plan_id, case_ids, plan_cases)}")
 
@@ -268,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
             "build": int(build["id"]),
             "manager": client.user,
         },
+        legacy=LEGACY_RUN_SUMMARIES,
     )
     run_id = int(run["id"])
     run_cases = {int(row["case"]) for row in client.rows("TestExecution", {"run": run_id})}
