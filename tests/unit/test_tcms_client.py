@@ -167,8 +167,10 @@ def test_missing_credentials_means_skip():
 
 
 def test_from_environment_skips_without_credentials(monkeypatch):
-    monkeypatch.delenv(tcms_module.TCMS_USER_ENV, raising=False)
-    monkeypatch.delenv(tcms_module.TCMS_PASSWORD_ENV, raising=False)
+    # load_config() один раз натягивает .env в os.environ, поэтому delenv
+    # не помогает: значения уже там. Обнуляем явно.
+    monkeypatch.setenv(tcms_module.TCMS_USER_ENV, "")
+    monkeypatch.setenv(tcms_module.TCMS_PASSWORD_ENV, "")
 
     with pytest.raises(TcmsUnavailable):
         TcmsClient.from_environment(load_config())

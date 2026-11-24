@@ -21,6 +21,13 @@ PUBLISHABLE_KEY_HEADER = "x-publishable-api-key"
 
 DEFAULT_TIMEOUT = 15.0
 
+# Cloudflare на staging отдаёт 403 (code 1010) запросам с «библиотечным»
+# User-Agent, поэтому клиент ходит под обычным браузерным UA.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
+)
+
 
 class QaHttpClient:
     """HTTP-клиент с guard'ом по хостам и опциональным заголовком Medusa."""
@@ -32,6 +39,7 @@ class QaHttpClient:
         self.timeout: float = timeout
         self.session: requests.Session = requests.Session()
         self.session.verify = True
+        self.session.headers.update({"User-Agent": DEFAULT_USER_AGENT})
         # Ретраев по умолчанию нет (transport adapter не меняем): smoke-проверки
         # должны падать честно, а не «самоизлечиваться».
 
@@ -84,6 +92,19 @@ class QaHttpClient:
 
     def get(self, path: str, **kwargs: Any) -> requests.Response:
         return self.request("GET", path, **kwargs)
+
+    def post(self, path: str, **kwargs: Any) -> requests.Response:
+        return self.request("POST", path, **kwargs)
+
+    def delete(self, path: str, **kwargs: Any) -> requests.Response:
+        return self.request("DELETE", path, **kwargs)
+
+    def json_of(self, response: requests.Response) -> Any:
+        """Разбирает тело без падения: у Medusa ошибочные ответы не JSON."""
+        try:
+            return response.json()
+        except ValueError:
+            return {}
 
     def close(self) -> None:
         self.session.close()

@@ -109,14 +109,18 @@ def is_allowed_target(url: str) -> bool:
     return False
 
 
+class QaError(RuntimeError):
+    """Любая наша ошибка: неверная цель запроса, недоступный сервис, сбой API."""
+
+
 def require_allowed_target(url: str) -> str:
     """Как `is_allowed_target`, но любое неразрешённое направление — исключение."""
     host = _host_of(url)
     if host is None:
-        raise RuntimeError(f"Не удалось разобрать хост из URL: {url!r}")
+        raise QaError(f"Не удалось разобрать хост из URL: {url!r}")
     if not is_allowed_target(url):
-        raise RuntimeError(
-            f"Хост {host!r} не входит в белый список QA-целей M1 "
+        raise QaError(
+            f"Хост {host!r} не входит в белый список QA-целей "
             f"({', '.join(ALLOWED_HOSTS)})."
         )
     return url
@@ -168,8 +172,18 @@ class QaConfig:
         return f"{self.tcms_url}/json-rpc/"
 
 
+def _load_dotenv_once() -> None:
+    """Подтягивает `.env` рядом с репозиторием (в CI переменные задаёт раннер)."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # pragma: no cover - пакет в requirements, но не критично
+        return
+    load_dotenv(override=False)
+
+
 def load_config() -> QaConfig:
     """Собирает конфигурацию из переменных окружения с staging-дефолтами."""
+    _load_dotenv_once()
     config = QaConfig(
         env=os.getenv("QA_ENV", "staging").strip() or "staging",
         web_url=os.getenv("WEB_URL", "https://test.tamir.rs").rstrip("/"),
