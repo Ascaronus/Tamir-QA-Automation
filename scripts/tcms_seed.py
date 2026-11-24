@@ -198,6 +198,22 @@ def case_payload(
     }
 
 
+def is_changed(existing: dict[str, Any], key: str, wanted: Any) -> bool:
+    """Поменялось ли поле: Kiwi отдаёт числа/строки, а мы шлём `True`.
+
+    Сравнение по ``str`` без нормализации всегда считает ``is_automated``
+    изменённым (``1`` против ``True``), и тогда каждый прогон пишет кейс заново,
+    плодя версию текста.  Поля, которого в ответе фильтра нет, не трогаем:
+    сравнить не с чем, а ложная запись дороже, чем недостающее обновление.
+    """
+    if key not in existing:
+        return False
+    current = existing[key]
+    if isinstance(wanted, bool):
+        return str(current) != ("1" if wanted else "0")
+    return str(current) != str(wanted)
+
+
 def sync_case(
     client: TcmsClient,
     case: dict[str, str],
@@ -229,7 +245,7 @@ def sync_case(
     # Обновляем только изменившиеся поля: каждое сохранение кейса в Kiwi создаёт
     # строку в истории, и полная запись на каждом прогоне раздувала бы историю
     # текста без пользы.
-    changes = {k: v for k, v in values.items() if str(existing.get(k, "")) != str(v)}
+    changes = {k: v for k, v in values.items() if is_changed(existing, k, v)}
     if not changes:
         return existing
     updated = client.update("TestCase", int(existing["id"]), changes)
