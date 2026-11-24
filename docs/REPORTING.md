@@ -1,46 +1,125 @@
 # Как прогон попадает на https://qa.tamir.rs
 
-Три джоба в `.github/workflows/qa-smoke.yml` образуют конвейер:
-`qa-smoke` → `qa-report` → `qa-publish`.
+Пять джобов в `.github/workflows/qa-smoke.yml` образуют конвейер:
+
+```
+qa-unit ─(pull request)→ офлайн-проверки репозитория, без отчёта
+
+qa-smoke ─┐
+          ├→ qa-report → qa-publish → https://qa.tamir.rs/<n>/
+qa-e2e  ──┘
+```
+
+`qa-smoke` и `qa-e2e` гоняют тесты на staging-раннере, `qa-report` собирает из их
+результатов один Allure-отчёт, `qa-publish` кладёт его в каталог раздачи.
+
+Расписание и запуск: `push` и `pull_request` в `main`, `workflow_dispatch`
+(с input `headed` — браузер с интерфейсом) и ночной cron `0 5 * * 1-5` по будням.
+
+## 0. `qa-unit` — GitHub-hosted, только `pull_request`
+
+`pytest -m unit` на `ubuntu-latest`: офлайн-проверки самого репозитория, без сети,
+без секретов и без доступа к стенду. Это тот статус-чек, который требует защита
+ветки перед auto-merge. Отчёта он не публикует.
 
 ## 1. `qa-smoke` — self-hosted runner на staging
 
 Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на том же хосте, где
 развернут стек отчётов (`/opt/qa-stack`). Он:
 
-1. ставит зависимости через `uv` (`uv venv --python 3.12`, `uv pip install -r requirements.txt`);
-2. запускает **одним** вызовом `pytest -m "unit or smoke or api or seo or catalog" --junitxml=.tmp/junit.xml`
-   (`unit` — офлайн-проверки самого репозитория, они идут первыми). Один вызов важен:
-   `--clean-alluredir` из `addopts` стирал бы результаты предыдущего запуска;
+1. ставит зависимости через `uv` (`uv venv --python 3.12`, `uv pip install -r requirements.txt`)
+   и `playwright install chromium`;
+2. запускает **одним** вызовом `pytest -m "unit or smoke or api or seo or catalog" --junitxml=.tmp/junit.xml`.
+   Один вызов важен: `--clean-alluredir` из `addopts` (`pytest.ini`) стирал бы
+   результаты предыдущего запуска;
 3. пишет в `.tmp/allure-results` файлы `environment.properties` и `executor.json` —
-   описание окружения и ссылка на прогон GitHub Actions прямо внутри Allure-отчёта;
+   описание окружения (`Web`, `Api`, `Reports`, `TCMS`, `Mailpit`, `Runner`) и ссылка
+   на прогон GitHub Actions прямо внутри Allure-отчёта;
 4. складывает сырые Allure-результаты в `.tmp/allure-results` (это делает
    `--alluredir` из `pytest.ini`) и загружает их артефактом `allure-results`
-   с `if: always()`, чтобы отчёт был даже при упавших тестах.
+   с `if: always()`, чтобы отчёт был даже при упавших тестах;
+5. загружает артефактом `steps-smoke` файл шагов `.tmp/steps.json` (путь задан явно
+   через `QA_STEPS_FILE`) — по нему Kiwi TCMS получает тексты шагов кейсов.
+
+Сидинг и перенос результатов в Kiwi TCMS из этого джоба убраны: тесты больше не
+держат секреты `TCMS_*`, а каталог кейсов строится один раз в `qa-report` по
+слитым шагам обоих прогонов (см. п. 3).
 
 Сам Allure-отчёт на staging **не** собирается: на staging-хосте нет Java,
 поэтому сборка уезжает на GitHub-hosted джоб.
 
-## 2. `qa-report` — GitHub-hosted (ubuntu-latest)
+## 2. `qa-e2e` — self-hosted runner, браузер и сценарии
 
-Ставит Java (`actions/setup-java@v4`, Temurin 17) и CLI Allure
-(`npm i -g allure-commandline`), скачивает артефакт `allure-results` и выполняет:
+Отдельный job рядом с `qa-smoke`, а не шаг внутри него: прогоны долгие
+(`timeout-minutes: 30` — зависший Chromium иначе блокировал бы очередь на
+единственном раннере), результаты пишутся в свой каталог, а уборка тестовых
+данных должна идти даже при падении тестов.
+
+1. те же `uv` + `playwright install chromium` (без `--with-deps` и без sudo:
+   системные зависимости Chromium установлены один раз на машине);
+2. `pytest -m "e2e or scenario" --alluredir=.tmp/allure-e2e` — отдельный
+   allure-каталог ровно из-за `--clean-alluredir`: рядом с прогоном `qa-smoke`
+   эти же вызовы затирали бы чужие результаты;
+3. артефакт `allure-results-e2e` с `if: always()` и артефакт `steps-e2e` — файл
+   шагов `.tmp/steps.json` (`QA_STEPS_FILE` задан явно), иначе у браузерных кейсов
+   в TCMS не было бы текста шагов;
+4. шаг `python scripts/qa_cleanup.py` с `if: always()` и `continue-on-error: true` —
+   отменяет QA-заказы и удаляет тестовые корзины/покупателей (см.
+   [TEST-PLAN.md](TEST-PLAN.md), §16).
+
+Chromium ставится в каталог внутри workspace джоба (`PLAYWRIGHT_BROWSERS_PATH`),
+а перед pytest отдельный шаг печатает `playwright --version`: если браузер не
+поднялся на раннере, это видно в логе до первой ошибки теста, а не внутри
+`Page.goto`.
+
+Секреты этого джоба — только имена переменных: `MEDUSA_PUBLISHABLE_API_KEY`,
+`MEDUSA_ADMIN_EMAIL`, `MEDUSA_ADMIN_PASSWORD`, `MAILPIT_URL`, `MAILPIT_USER`,
+`MAILPIT_PASSWORD`, `QA_WEB_EMAIL`, `QA_WEB_PASSWORD`; адреса стенда приходят
+из `vars.WEB_URL` / `vars.API_URL`.
+
+## 3. `qa-report` — GitHub-hosted (ubuntu-latest)
+
+`needs: [qa-smoke, qa-e2e]`. Ставит Java (`actions/setup-java`, Temurin 17) и CLI
+Allure (`npm i -g allure-commandline`), скачивает результаты **обоих** прогонов:
+
+```yaml
+uses: actions/download-artifact
+with:
+  pattern: allure-results*      # allure-results + allure-results-e2e
+  path: .tmp/allure-by-job      # каждый артефакт в свой каталог
+```
+
+`pattern` нужен потому, что результатов два: у `qa-smoke` — `unit`/`smoke`/`api`/
+`seo`/`catalog`, у `qa-e2e` — `e2e`/`scenario`. Каталоги не сливаются в один,
+а склеиваются шагом «Объединение результатов для отчёта» (`cp -a` обоих в
+`.tmp/allure-results`), после чего:
 
 ```bash
 allure generate .tmp/allure-results -o .tmp/allure-report --clean
 ```
 
-Результат — артефакт `allure-report`.
+Результат — артефакт `allure-report`. То есть в одном отчёте прогона лежат и
+read-only проверки, и браузерные путешествия покупателя, со своими шагами и
+скриншотами.
 
-Версии действий зафиксированы теми, что уже отработали на этом раннере: у части
-экшенов нет major-тега (`astral-sh/setup-uv@v10` раннер не нашёл, и джоба упала
-ещё на `Set up job`), поэтому обновления приходят отдельными PR от Dependabot
-(`.github/dependabot.yml`), а не ручными правками в `main`.
+В этом же джобе (после генерации и загрузки отчёта) живёт Kiwi TCMS: артефакты
+шагов обоих прогонов (`pattern: steps*`) сливаются в один `.tmp/steps.json`,
+затем на `main` выполняются `scripts/tcms_seed.py --steps-file .tmp/steps.json`
+и `scripts/tcms_sync_results.py` — отдельно для `allure-results` и для
+`allure-results-e2e`, с `--report-url https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/`.
+Шаги идут с `continue-on-error: true`: сбой интеграции с TCMS не должен ломать
+публикацию отчёта. Seed стоит **после** сборки отчёта, потому что коллекция
+внутри сида тоже подхватывает `--clean-alluredir` и стёрла бы результаты.
 
-## 3. `qa-publish` — self-hosted runner, только `main`
+Размещение в GitHub-hosted джобе означает, что `tcms.tamir.rs` должен быть
+доступен из публичного интернета. Как только на него включится Cloudflare Access,
+эти шаги нужно переносить на self-hosted джоб (например `qa-tcms`), иначе JSON-RPC
+начнёт отвечать `403`.
 
-Скачивает `allure-report` и обычными файловыми операциями раскладывает отчёт по
-фиксированным путям:
+## 4. `qa-publish` — self-hosted runner, только `main`
+
+`needs: [qa-report, qa-smoke, qa-e2e]`. Скачивает `allure-report` и обычными
+файловыми операциями раскладывает отчёт по фиксированным путям:
 
 - `/opt/qa-stack/reports/${GITHUB_RUN_NUMBER}` — каталог конкретного прогона
   (подкаталога `runs/` нет, id прогона лежит прямо в `reports`);
@@ -50,17 +129,35 @@ allure generate .tmp/allure-results -o .tmp/allure-report --clean
 Шаг публикации дословно делает:
 
 ```bash
-mkdir -p /opt/qa-stack/reports/${GITHUB_RUN_NUMBER}
-rm -rf "/opt/qa-stack/reports/${GITHUB_RUN_NUMBER:?}/"*
-cp -a .tmp/allure-report/. /opt/qa-stack/reports/${GITHUB_RUN_NUMBER}/
-rm -rf /opt/qa-stack/reports/latest
-mkdir -p /opt/qa-stack/reports/latest
-cp -a .tmp/allure-report/. /opt/qa-stack/reports/latest/
+RUN_DIR="/opt/qa-stack/reports/${GITHUB_RUN_NUMBER}"
+LATEST_DIR="/opt/qa-stack/reports/latest"
+mkdir -p "${RUN_DIR}"
+rm -rf "${RUN_DIR:?}/"*
+cp -a .tmp/allure-report/. "${RUN_DIR}/"
+rm -rf "${LATEST_DIR}"
+mkdir -p "${LATEST_DIR}"
+cp -a .tmp/allure-report/. "${LATEST_DIR}/"
 ```
 
 После этого шаг вызывает `qa/publish_runs_index.py`, который обновляет
 `/opt/qa-stack/reports/json/runs.json` — индекс прогонов для фронтенда
 `https://qa.tamir.rs` (он же отдаётся как `https://qa.tamir.rs/json/runs.json`).
+Отдельного «локального скрипта публикации» в репозитории нет: публикация — это
+шаги джоба плюс `qa/publish_runs_index.py`.
+
+Отдельная деталь, о которой надо помнить: статус в индекс передаётся как
+`--status "${{ needs.qa-smoke.result }}"`, то есть **по результату `qa-smoke`**.
+Падение `qa-e2e` в индексе прогонов отдельно не подсвечивается — его видно по
+самому Allure-отчёту (в merged-результатах падающие тесты помечены) и по логу
+джобы.
+
+### Шаги теста внутри отчёта
+
+Шаги сценария описаны один раз в тесте — fixture `steps` (`tests/conftest.py`)
+оборачивает их в `qa/steps.py::tracked_step`, который делает `allure.step(action)`.
+В отчёте это видно как вложенные шаги теста, плюс текстовые вложения (например
+снимок корзины из сценария M3) через `allure.attach`. Те же шаги уезжают в
+каталог TCMS — см. [TCMS.md](TCMS.md).
 
 ### Доступные URL отчёта
 
@@ -122,12 +219,31 @@ python3 qa/publish_runs_index.py \
 
 Скрипт идемпотентен: файл пишется атомарно, старые записи сохраняются.
 
-## Секреты
+## Очередь прогонов
 
-Единственный используемый секрет — `MEDUSA_PUBLISHABLE_API_KEY` (только имя;
-значение живёт в GitHub Actions secrets). Без него позитивная проверка с
-publishable-ключом корректно скипается, а негативная (`400 not_allowed`)
-работает всегда.
+`concurrency.group: qa-smoke-${{ github.ref_name }}` с `cancel-in-progress: false`:
+прогоны сериализуются, а не отменяются. Отменять прогон стенда нельзя — каждый из
+них публикует отчёт и пишет результаты в TCMS. Практика показала обратное: при
+серии слияний Dependabot четыре из шести прогонов на `main` были отменены, и в
+отчётности появились дырки. Раннер один (`tamir-qa`), поэтому очередь безопаснее,
+чем потерянные прогоны.
+
+## Секреты и переменные
+
+Значений в репозитории нет — он публичный; в workflow только имена переменных.
+
+| Имя | Где используется |
+| --- | --- |
+| `MEDUSA_PUBLISHABLE_API_KEY` | `qa-smoke`, `qa-e2e`: позитивные проверки store-API с publishable-ключом |
+| `MEDUSA_ADMIN_EMAIL`, `MEDUSA_ADMIN_PASSWORD` | `qa-e2e`: отмена заказов админкой и уборка данных |
+| `MAILPIT_URL`, `MAILPIT_USER`, `MAILPIT_PASSWORD` | `qa-e2e`: чтение тестовой почты (доступно только из локальной сети стенда) |
+| `QA_WEB_EMAIL`, `QA_WEB_PASSWORD` | `qa-e2e`: учётка постоянного тестового покупателя на стенде (регистрация закрыта Turnstile, см. [FINDINGS-frontend-backend.md](FINDINGS-frontend-backend.md)) |
+| `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD` | `qa-report`: сидинг каталога и перенос результатов в Kiwi TCMS |
+| `vars.WEB_URL`, `vars.API_URL` | `qa-e2e`: адреса стенда (конфигурационные переменные, не секреты) |
+
+Без этих переменных зависящие от них проверки скипаются, а не падают: например,
+без `MEDUSA_PUBLISHABLE_API_KEY` позитивная проверка с ключом скипается, а
+негативная (`400 not_allowed`) работает всегда.
 
 ## Известные проблемы и как они были починены
 
@@ -145,12 +261,24 @@ publishable-ключом корректно скипается, а негати�
    `10.0.0.0/8`, `172.16.0.0/12` (docker bridge) и `192.168.0.0/16`, дальше —
    `deny all`. Порт контейнера (`192.168.1.143:8090`) опубликован на хосте, поэтому
    с рабочей машины проверка проходит, а с произвольного адреса в интернете — нет.
-3. **Рефы действий в workflow зафиксированы проверенными версиями.** В
-   `.github/workflows/qa-smoke.yml` используются `actions/checkout@v4`,
-   `astral-sh/setup-uv@v5`, `actions/upload-artifact@v4`,
-   `actions/download-artifact@v5`, `actions/setup-java@v4` — те, что точно
-   работают на этом self-hosted runner. Реф вида `astral-sh/setup-uv@v10` у части
-   экшенов отсутствует, и джоба падает ещё на шаге `Set up job`
-   («Unable to resolve action» / «unable to find version»). Поэтому обновления
-   приходят только PR от Dependabot (`.github/dependabot.yml`) и проверяются этим
-   же прогоном, а не правками в `main`.
+3. **Рефы действий в workflow — только проверенными версиями.** В
+   `.github/workflows/qa-smoke.yml` сейчас `actions/checkout@v7`,
+   `astral-sh/setup-uv@v7`, `actions/upload-artifact@v7`,
+   `actions/download-artifact@v8`, `actions/setup-java@v6` — те, что реально
+   отработали на этом раннере. У части экшенов major-тега нет (`setup-uv@v10`
+   раннер не нашёл, и джоба падала ещё на `Set up job`), поэтому версии
+   обновляются PR от Dependabot (`.github/dependabot.yml`) и проверяются этим же
+   прогоном, а не правками в `main`.
+4. **Два allure-каталога вместо одного.** После появления `qa-e2e` нельзя гонять
+   все маркеры одним вызовом: `--clean-alluredir` из `addopts` стирал бы
+   результаты. Поэтому `qa-smoke` пишет в `.tmp/allure-results`, `qa-e2e` —
+   в `.tmp/allure-e2e`, а `qa-report` склеивает их через `pattern: allure-results*`
+   и `merge-multiple: true`.
+
+## Что пока не закрыто
+
+Перенос результатов в Kiwi TCMS (`scripts/tcms_sync_results.py`) выполняется в
+джобе `qa-smoke` и читает только `.tmp/allure-results`. Результаты `qa-e2e`
+(браузерные `e2e`-шаги) в этот каталог не попадают, поэтому в TCMS они пока не
+отражаются — в отчёте Allure они есть, в тест-ране TCMS пока нет. Подробности и
+план — [TCMS.md](TCMS.md).
