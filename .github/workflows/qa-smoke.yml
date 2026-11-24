@@ -66,10 +66,10 @@ jobs:
     env:
       # Значения — только в GitHub Actions secrets; здесь лишь имена переменных.
       MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
-      # Kiwi TCMS: сервисная учётка; её логин и пароль — в секретах репозитория.
-      TCMS_URL: ${{ secrets.TCMS_URL }}
-      TCMS_USER: ${{ secrets.TCMS_USER }}
-      TCMS_PASSWORD: ${{ secrets.TCMS_PASSWORD }}
+      # Каталог и результаты в Kiwi TCMS ведёт job qa-report (он же видит шаги
+      # e2e-прогона), поэтому секретов TCMS здесь нет. Путь файла шагов фиксим
+      # явно: его же указывают сидингу и синхронизации в qa-report.
+      QA_STEPS_FILE: .tmp/steps.json
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -137,34 +137,153 @@ jobs:
           path: .tmp/allure-results/
           if-no-files-found: warn
 
-      # Каталог Kiwi TCMS приводится в соответствие коду на каждом прогоне main:
-      # seeder идемпотентен и ключуется по pytest nodeid (поле `script`).
-      # continue-on-error: недоступность TCMS не должна делать красным сам прогон —
-      # сбой виден в логе шага, а тесты на стенде прошли.
-      - name: Каталог тест-кейсов в Kiwi TCMS
-        if: github.ref == 'refs/heads/main' && always()
-        continue-on-error: true
+      # Файл шагов (его пишет pytest_sessionfinish, см. qa/steps.py) — единственный
+      # источник текста тест-кейсов для Kiwi TCMS. Сам сидинг и перенос результатов
+      # делает job qa-report: только там видны шаги обоих прогонов, включая e2e.
+      # Файл подстрахован пустым словарём: если прогон не записал ни одного шага,
+      # upload-artifact не создал бы артефакт, и скачивание в qa-report упало бы.
+      - name: Подготовка файла шагов
+        if: always()
         run: |
           set -euo pipefail
-          source .venv/bin/activate
-          python scripts/tcms_seed.py
+          mkdir -p .tmp
+          if [ ! -f .tmp/steps.json ]; then echo '{}' > .tmp/steps.json; fi
 
-      # Результаты пишутся из Allure result-файлов (тот же источник, что и отчёт):
-      # TestExecution.create/update + ссылка на будущий отчёт этого прогона.
-      - name: Результаты прогона в Kiwi TCMS
-        if: github.ref == 'refs/heads/main' && always()
+      - name: Загрузка шагов тест-кейсов
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: steps-smoke
+          path: .tmp/steps.json
+          if-no-files-found: warn
+
+  # Браузерные e2e и сценарные проверки на стенде. Отдельный job рядом с
+  # qa-smoke, а не шаг внутри него: прогоны долгие, результаты пишутся в свой
+  # allure-каталог, а уборка тестовых данных в конце идёт даже при падении
+  # тестов. На общем tamir-qa раннере job встаёт в очередь за smoke-прогоном
+  # (concurrency не отменяет, а сериализует прогоны).
+  qa-e2e:
+    name: Прогон e2e + сценарии (self-hosted runner на staging)
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, tamir-qa]
+    # Соседние job таймаут не фиксируют, но браузерному прогону на единственном
+    # раннере своя граница нужна: зависший Chromium иначе блокирует всю очередь
+    # прогонов до часового GitHub-лимита.
+    timeout-minutes: 30
+    env:
+      # URL стенда — конфигурационные переменные репозитория (vars), ключи и
+      # учётки — только в secrets; здесь лишь имена переменных.
+      WEB_URL: ${{ vars.WEB_URL }}
+      API_URL: ${{ vars.API_URL }}
+      MEDUSA_PUBLISHABLE_API_KEY: ${{ secrets.MEDUSA_PUBLISHABLE_API_KEY }}
+      MEDUSA_ADMIN_EMAIL: ${{ secrets.MEDUSA_ADMIN_EMAIL }}
+      MEDUSA_ADMIN_PASSWORD: ${{ secrets.MEDUSA_ADMIN_PASSWORD }}
+      # Mailpit (тестовая почта) доступен только из локальной сети стенда.
+      MAILPIT_URL: ${{ secrets.MAILPIT_URL }}
+      MAILPIT_USER: ${{ secrets.MAILPIT_USER }}
+      MAILPIT_PASSWORD: ${{ secrets.MAILPIT_PASSWORD }}
+      # Учётка постоянного тестового покупателя стенда: регистрацию через UI
+      # закрывает Cloudflare Turnstile, поэтому аккаунт заведён один раз руками,
+      # а значения живут только в secrets (см. docs/FINDINGS-frontend-backend.md).
+      QA_WEB_EMAIL: ${{ secrets.QA_WEB_EMAIL }}
+      QA_WEB_PASSWORD: ${{ secrets.QA_WEB_PASSWORD }}
+      # Пути каталогов браузеров не задаём: Playwright сам кладёт их в
+      # ~/.cache/ms-playwright раннера по ревизии сборки (chromium-<rev>), поэтому
+      # версии не конфликтуют, а actions/checkout с clean: true каждый прогон
+      # стирал бы каталог внутри workspace и Chromium качался бы заново.
+      # Путь файла шагов фиксим явно: его же передают сидингу в qa-report.
+      QA_STEPS_FILE: .tmp/steps.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей через uv
+        run: |
+          set -euo pipefail
+          # .venv в каталоге прогона; интерпретатор — системный Python 3.12 стенда.
+          uv venv --python 3.12
+          uv pip install -r requirements.txt
+          # Без --with-deps и без sudo: системные зависимости Chromium установлены
+          # один раз на машине (runner ходит без пароля, apt в прогонах не
+          # поднимается). Браузеры — в каталог из PLAYWRIGHT_BROWSERS_PATH.
+          .venv/bin/playwright install chromium
+
+      # Версия и наличие браузера видны в логе до запуска тестов: если install
+      # не дотянул браузер, падение «browserType.launch» в первом же тесте
+      # иначе выглядит как проблема стенда, а не прогона.
+      - name: Проверка Playwright
+        run: |
+          set -euo pipefail
+          .venv/bin/playwright --version
+
+      # Отдельный allure-каталог и отдельный вызов pytest: addopts содержит
+      # --clean-alluredir, поэтому рядом с прогоном qa-smoke эти же маркеры
+      # затирали бы чужие результаты.
+      - name: Запуск e2e и сценарных проверок
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+          pytest -m "e2e or scenario" --alluredir=.tmp/allure-e2e ${{ inputs.headed && '--headed' || '' }}
+
+      - name: Загрузка e2e Allure-результатов
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: allure-results-e2e
+          path: .tmp/allure-e2e/
+          if-no-files-found: warn
+
+      # Шаги e2e-сценариев идут в тот же каталог TCMS: qa-report склеивает их с
+      # шагами smoke-прогона, и в тексте кейса оказываются настоящие шаги
+      # сценария (оформление заказа → письмо в Mailpit), а не пересказ докстринга.
+      - name: Подготовка файла шагов
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp
+          if [ ! -f .tmp/steps.json ]; then echo '{}' > .tmp/steps.json; fi
+
+      - name: Загрузка шагов тест-кейсов
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: steps-e2e
+          path: .tmp/steps.json
+          if-no-files-found: warn
+
+      # Уборка тестовых данных на staging: отмена QA-заказов и удаление
+      # QA-покупателей (scripts/qa_cleanup.py). if: always() — чистим и после
+      # упавших тестов; continue-on-error: сбой уборки не перекрашивает прогон
+      # (остатки доочистит следующий ночной прогон), красным должен быть сбой
+      # тестов, а не уборки.
+      - name: Уборка тестовых данных на staging
+        if: always()
         continue-on-error: true
         run: |
           set -euo pipefail
           source .venv/bin/activate
-          python scripts/tcms_sync_results.py \
-            --report-url "https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/"
+          python scripts/qa_cleanup.py
 
   qa-report:
     name: Сборка Allure-отчёта (GitHub-hosted, там есть Java)
-    needs: qa-smoke
+    # needs включает qa-e2e: без ожидания e2e-артефакта отчёт собирался бы без
+    # браузерных прогонов, а каталог Kiwi TCMS — без e2e-кейсов и их результатов.
+    needs: [qa-smoke, qa-e2e]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      # Kiwi TCMS: сервисная учётка; её логин и пароль — в секретах репозитория.
+      # TCMS доступен извне (Cloudflare Tunnel, Access не включён), поэтому
+      # сидинг и перенос результатов живут в этом GitHub-hosted job вместе с
+      # отчётом: здесь собраны артефакты обоих прогонов.
+      TCMS_URL: ${{ secrets.TCMS_URL }}
+      TCMS_USER: ${{ secrets.TCMS_USER }}
+      TCMS_PASSWORD: ${{ secrets.TCMS_PASSWORD }}
     steps:
       - name: Java 17 (нужна для Allure CLI)
         uses: actions/setup-java@v6
@@ -175,11 +294,76 @@ jobs:
       - name: Установка Allure CLI
         run: npm i -g allure-commandline
 
-      - name: Скачивание результатов
+      # Скрипты tcms_seed / tcms_sync_results импортируют пакет qa, поэтому здесь
+      # тот же checkout и та же venv из requirements.txt, что в прогонных job
+      # (браузеры Playwright ставить не нужно — только коллекция pytest).
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей через uv
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12
+          uv pip install -r requirements.txt
+
+      # merge-multiple: false — по каталогу на артефакт, поэтому результаты
+      # smoke (.tmp/allure-by-job/allure-results) и e2e
+      # (.tmp/allure-by-job/allure-results-e2e) остаются раздельными: в TCMS они
+      # уходят двумя отдельными вызовами, и сбой e2e-синхронизации не съедает
+      # результаты smoke-прогона.
+      - name: Скачивание Allure-результатов
         uses: actions/download-artifact@v8
         with:
-          name: allure-results
-          path: .tmp/allure-results
+          pattern: allure-results*
+          path: .tmp/allure-by-job
+
+      - name: Скачивание шагов тест-кейсов
+        uses: actions/download-artifact@v8
+        with:
+          pattern: steps*
+          path: .tmp/steps
+
+      # Шаги обоих прогонов сливаются в один файл-словарь {nodeid: [шаги]}:
+      # seeder и синхронизация читают один путь, а nodeid smoke- и e2e-тестов не
+      # пересекаются, так что объединение — обычное слияние словарей.
+      - name: Слияние шагов обоих прогонов
+        run: |
+          set -euo pipefail
+          .venv/bin/python - <<'PY'
+          import json
+          import pathlib
+
+          merged = {}
+          for path in sorted(pathlib.Path(".tmp/steps").rglob("steps.json")):
+              try:
+                  data = json.loads(path.read_text(encoding="utf-8"))
+              except (OSError, ValueError) as exc:
+                  print(f"шаги из {path} не прочитаны: {exc}")
+                  continue
+              if isinstance(data, dict):
+                  merged.update(data)
+              print(f"{path}: {len(data) if isinstance(data, dict) else 0} тестов")
+          out = pathlib.Path(".tmp/steps.json")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          out.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+          print(f"всего шагов для TCMS: {len(merged)}")
+          PY
+
+      # Отчёт же строится по объединённым результатам: у Allure result-файлы
+      # именованы хэшами, коллизий между прогонами нет, environment.properties и
+      # executor.json приходят из smoke-артефакта.
+      - name: Объединение результатов для отчёта
+        run: |
+          set -euo pipefail
+          mkdir -p .tmp/allure-results
+          for src in .tmp/allure-by-job/*; do
+            if [ -d "$src" ]; then cp -a "$src/." .tmp/allure-results/; fi
+          done
 
       - name: Генерация отчёта
         run: allure generate .tmp/allure-results -o .tmp/allure-report --clean
@@ -190,11 +374,52 @@ jobs:
           name: allure-report
           path: .tmp/allure-report/
 
+      # Каталог Kiwi TCMS приводится в соответствие коду на каждом прогоне main:
+      # seeder идемпотентен и ключуется по pytest nodeid (поле `script`), а текст
+      # кейса берётся из шагов, которые прогоны оставили в шаговых артефактах.
+      # Порядок после «Генерации отчёта» не случайный: коллекция внутри сида
+      # подхватывает addopts из pytest.ini (--alluredir + --clean-alluredir) и
+      # стёрла бы .tmp/allure-results, если бы шла перед генерацией.
+      # continue-on-error: недоступность TCMS не должна делать красным сам прогон —
+      # сбой виден в логе шага, а тесты на стенде прошли.
+      - name: Каталог тест-кейсов в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/tcms_seed.py --steps-file .tmp/steps.json
+
+      # Результаты пишутся из Allure result-файлов (тот же источник, что и отчёт):
+      # TestExecution.create/update + ссылка на отчёт этого прогона. Два вызова:
+      # свой для smoke и свой для e2e — так браузерные кейсы попадают в TCMS даже
+      # если smoke-часть прогона упала.
+      - name: Результаты smoke в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/tcms_sync_results.py \
+            --results .tmp/allure-by-job/allure-results \
+            --steps-file .tmp/steps.json \
+            --report-url "https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/"
+
+      - name: Результаты e2e в Kiwi TCMS
+        if: github.ref == 'refs/heads/main' && always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          .venv/bin/python scripts/tcms_sync_results.py \
+            --results .tmp/allure-by-job/allure-results-e2e \
+            --steps-file .tmp/steps.json \
+            --report-url "https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/"
+
   qa-publish:
     name: Публикация отчёта на qa.tamir.rs
     # qa-smoke добавлен в needs ради честного статуса: conclusion прогона тестов
     # берётся из него, а needs-context содержит только перечисленные джобы.
-    needs: [qa-report, qa-smoke]
+    # qa-e2e — чтобы публикация не уходила вперёд отчёта, в котором уже лежат
+    # e2e-результаты.
+    needs: [qa-report, qa-smoke, qa-e2e]
     runs-on: [self-hosted, linux, tamir-qa]
     if: github.ref == 'refs/heads/main'
     steps:
