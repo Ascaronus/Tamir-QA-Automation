@@ -1,13 +1,11 @@
 """Интеграция с Kiwi TCMS: проверяем, что API стенда отвечает нашему боту.
 
-Тесты помечены `tcms` и пока не входят в CI-набор — включим в M2, когда будут
-секреты `TCMS_URL`/`TCMS_USER`/`TCMS_PASSWORD` и политика Cloudflare Access для
-`tcms.tamir.rs`. Без секретов тесты пропускаются, поэтому обычный прогон от них
-не зависит.
-
-Смысл проверки: подтвердить, что тестовый инстанс Kiwi TCMS действительно
-доступен для автоматизации, что вход бота проходит и что каталог (`Product`
-`Tamir`, справочники) заведён — иначе результаты прогонов некуда складывать.
+Тесты помечены `tcms`: без секретов `TCMS_URL`/`TCMS_USER`/`TCMS_PASSWORD` они
+пропускаются, поэтому обычный прогон от них не зависит. Смысл проверки —
+подтвердить, что тестовый инстанс Kiwi TCMS доступен для автоматизации, вход
+бота проходит и каталог заведён: продукт `Tamir`, тест-план пользовательских
+сценариев и тест-ран, в который `scripts/tcms_sync_results.py` кладёт
+результаты прогонов.
 
 Содержимое каталога создаёт `scripts/tcms_seed.py` (идемпотентно).
 """
@@ -18,6 +16,7 @@ import pytest
 
 from qa.config import load_config
 from qa.tcms import TcmsClient, TcmsUnavailable
+from scripts.tcms_seed import PLAN_NAME, RUN_SUMMARY
 
 pytestmark = pytest.mark.tcms
 
@@ -59,11 +58,13 @@ def test_case_catalog_is_seeded():
 
     assert cases, "нет ни одного автоматизированного кейса — нужен scripts/tcms_seed.py"
 
-    plan = client.find("TestPlan", name__contains="Staging")
-    assert plan is not None, "нет тест-плана для смока стенда"
+    # Имена задаёт seeder — проверяем по тем же константам, чтобы контракт
+    # теста и каталога не разъезжался при переименовании.
+    plan = client.find("TestPlan", name__exact=PLAN_NAME)
+    assert plan is not None, f"нет тест-плана {PLAN_NAME!r} — нужен scripts/tcms_seed.py"
 
-    runs = client.rows("TestRun", {"summary__contains": "Staging Smoke"})
-    assert runs, "нет ни одного тест-рана для смока стенда"
+    runs = client.rows("TestRun", {"summary__exact": RUN_SUMMARY})
+    assert runs, f"нет тест-рана {RUN_SUMMARY!r} — нужен scripts/tcms_seed.py"
 
 
 def test_execution_status_reference_is_usable():
