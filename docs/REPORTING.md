@@ -64,13 +64,16 @@ Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на то
    шагов `.tmp/steps.json` (`QA_STEPS_FILE` задан явно), иначе у браузерных кейсов
    в TCMS не было бы текста шагов;
 4. шаг `python scripts/qa_cleanup.py` с `if: always()` и `continue-on-error: true` —
-   отменяет QA-заказы и удаляет тестовые корзины/покупателей (см.
-   [TEST-PLAN.md](TEST-PLAN.md), §16).
+   отменяет QA-заказы и удаляет QA-покупателей; тестовые покупатели из
+   `QA_WEB_EMAIL` / `QA_KEEP_EMAILS` не удаляются никогда, а корзины удалить
+   нечем (см. [TEST-PLAN.md](TEST-PLAN.md), §16).
 
-Chromium ставится в каталог внутри workspace джоба (`PLAYWRIGHT_BROWSERS_PATH`),
-а перед pytest отдельный шаг печатает `playwright --version`: если браузер не
-поднялся на раннере, это видно в логе до первой ошибки теста, а не внутри
-`Page.goto`.
+Chromium кладётся в каталог раннера `~/.cache/ms-playwright` (переменную
+`PLAYWRIGHT_BROWSERS_PATH` не задаём: Playwright сам разносит сборки по каталогам
+`chromium-<rev>`, а путь внутри workspace `actions/checkout` с `clean: true`
+стирал бы каждый прогон, и браузер качался бы заново). Перед pytest отдельный шаг
+печатает `playwright --version`: если браузер не поднялся на раннере, это видно в
+логе до первой ошибки теста, а не внутри `Page.goto`.
 
 Секреты этого джоба — только имена переменных: `MEDUSA_PUBLISHABLE_API_KEY`,
 `MEDUSA_ADMIN_EMAIL`, `MEDUSA_ADMIN_PASSWORD`, `MAILPIT_URL`, `MAILPIT_USER`,

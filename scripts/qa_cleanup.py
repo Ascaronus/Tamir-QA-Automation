@@ -50,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-tag", default=os.getenv("QA_RUN_TAG", ""),
                         help="метка прогона (по умолчанию QA_RUN_TAG; пусто = все тестовые данные)")
     parser.add_argument("--dry-run", action="store_true", help="только показать найденное")
+    parser.add_argument("--orders-only", action="store_true",
+                        help="не трогать тестовых покупателей, только заказы")
     args = parser.parse_args(argv)
 
     load_dotenv(REPO_ROOT / ".env")
@@ -69,7 +71,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         orders = admin.find_qa_orders(args.run_tag)
-        customers = [] if args.orders_only else admin.find_qa_customers()
+        if args.orders_only:
+            customers, kept = [], []
+        else:
+            customers, kept = admin.find_qa_customers()
 
         print(f"Найдено тестовых заказов: {len(orders)}, тестовых покупателей: {len(customers)}")
         for order in orders:
@@ -77,15 +82,19 @@ def main(argv: list[str] | None = None) -> int:
                   f"status={order.get('status')}")
         for customer in customers:
             print(f"  покупатель {customer.get('email')} ({customer.get('id')})")
+        for customer in kept:
+            print(f"  стендовый аккаунт, не трогаем: {customer.get('email')} ({customer.get('id')})")
 
         if args.dry_run:
             print("--dry-run: ничего не меняем")
             return 0
 
-        summary = admin.clean(run_tag=args.run_tag, already_canceled_ok=True)
+        summary = admin.clean(run_tag=args.run_tag, already_canceled_ok=True,
+                              orders_only=args.orders_only)
 
         print("Готово: отменено заказов {orders_canceled}, пропущено {orders_skipped}, "
-              "удалено покупателей {customers_deleted}".format(**summary))
+              "удалено покупателей {customers_deleted}, стендовых аккаунтов не тронуто "
+              "{customers_kept}".format(**summary))
         if summary.get("last_error"):
             print(f"Последняя ошибка админ-API: {summary['last_error']}", file=sys.stderr)
         return 0

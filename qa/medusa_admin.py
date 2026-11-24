@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from qa.http import QaHttpClient
 
@@ -35,6 +35,21 @@ TEST_EMAIL_PATTERN = re.compile(r"^qa-[a-z0-9_.-]+@example\.(com|test)$", re.IGN
 
 ORDER_FIELDS = "id,display_id,email,status,metadata,created_at,total,currency_code"
 CUSTOMER_FIELDS = "id,email,created_at,metadata"
+
+
+def keep_emails(extra: Iterable[str] = ()) -> set[str]:
+    """Почта, которую уборка удалять не вправе.
+
+    Под стендовый аккаунт, под которым бегает путь зарегистрированного
+    покупателя, подходит тот же шаблон ``qa-*@example.com``, что и для данных
+    прогона. Такой аккаунт заведён один раз и переживает прогоны, поэтому он
+    называется явно: ``QA_WEB_EMAIL`` (тот же секрет, что читает e2e-джоб) и
+    опциональный список ``QA_KEEP_EMAILS`` через запятую.
+    """
+    emails = {str(e).strip().lower() for e in extra if str(e).strip()}
+    for var in ("QA_KEEP_EMAILS", "QA_WEB_EMAIL"):
+        emails.update(part.strip().lower() for part in os.environ.get(var, "").split(",") if part.strip())
+    return emails
 
 
 class MedusaAdminError(RuntimeError):
@@ -156,13 +171,23 @@ class MedusaAdminClient:
                 return order
         return None
 
-    def find_qa_customers(self) -> list[dict]:
-        """Тестовые покупатели: почта с префиксом ``qa-`` на домене для тестов."""
-        return [
-            customer
-            for customer in self.list_all("/admin/customers", "customers", CUSTOMER_FIELDS)
-            if TEST_EMAIL_PATTERN.match(str(customer.get("email") or ""))
-        ]
+    def find_qa_customers(self, keep: Iterable[str] = ()) -> tuple[list[dict], list[dict]]:
+        """Тестовые покупатели: ``(кого убрать, кого не трогать)``.
+
+        Попадают письма с префиксом ``qa-`` на тестовом домене, но аккаунты из
+        :func:`keep_emails` возвращаются вторым списком: стендовый покупатель,
+        под которым входится e2e-сценарий, формально тоже ``qa-*``, и удалить
+        его — значит сломать следующий прогон.
+        """
+        protected = keep_emails(keep)
+        removable: list[dict] = []
+        kept: list[dict] = []
+        for customer in self.list_all("/admin/customers", "customers", CUSTOMER_FIELDS):
+            email = str(customer.get("email") or "").lower()
+            if not TEST_EMAIL_PATTERN.match(email):
+                continue
+            (kept if email in protected else removable).append(customer)
+        return removable, kept
 
     # ---------- уборка ----------
 
@@ -177,12 +202,26 @@ class MedusaAdminClient:
         body = self.delete(f"/admin/customers/{customer_id}")
         return bool(isinstance(body, dict) and body.get("deleted"))
 
-    def clean(self, run_tag: str = "", already_canceled_ok: bool = True) -> dict[str, Any]:
+    def clean(
+        self,
+        run_tag: str = "",
+        already_canceled_ok: bool = True,
+        keep: Iterable[str] = (),
+        orders_only: bool = False,
+    ) -> dict[str, Any]:
         """Отменяет тестовые заказы и удаляет тестовых покупателей.
+
+        ``orders_only`` — только заказы (ночной прогон, который не создавал
+        покупателей). Покупатели из :func:`keep_emails` не удаляются никогда.
 
         Возвращает сводку для отчёта (только счётчики и id, без писем).
         """
-        summary: dict[str, Any] = {"orders_canceled": 0, "orders_skipped": 0, "customers_deleted": 0}
+        summary: dict[str, Any] = {
+            "orders_canceled": 0,
+            "orders_skipped": 0,
+            "customers_deleted": 0,
+            "customers_kept": 0,
+        }
 
         for order in self.find_qa_orders(run_tag):
             status = str(order.get("status") or "")
@@ -194,7 +233,9 @@ class MedusaAdminClient:
             else:
                 summary["orders_skipped"] += 1
 
-        for customer in self.find_qa_customers():
+        customers, kept = ([], []) if orders_only else self.find_qa_customers(keep)
+        summary["customers_kept"] = len(kept)
+        for customer in customers:
             if self.delete_customer(str(customer.get("id"))):
                 summary["customers_deleted"] += 1
 
