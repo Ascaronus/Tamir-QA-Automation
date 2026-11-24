@@ -14,7 +14,9 @@
   первого перехода, иначе поверх макета баннер и клики падают по таймауту;
 * «Naruci» на ``/rs/checkout`` — двухшаговая кнопка: сначала «Potvrdi adresu i prikazi
   dostavu» (адрес + доставка), потом ``input[name=shipping]`` появляется и только тогда
-  кнопка становится «Naruci».
+  кнопка становится «Naruci»;
+* в форме регистрации у ``<select>`` города нет ни ``id``, ни ``name`` — единственный
+  устойчивый рычаг это ``autocomplete="address-level2"``, а выбор — по ``label``.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import re
 import time
 
 from playwright.sync_api import Locator, Page
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 # --- витрина: каталог и карточка --------------------------------------------------
 CATALOG_HEADING = "h1"
@@ -61,11 +64,35 @@ ACCOUNT_ORDERS = "div#account-orders"
 ACCOUNT_TABS = "div#account-orders, div#account-profile"
 ACCOUNT_TAB_ORDERS = "button:has-text('orud')"
 
+# --- регистрация -------------------------------------------------------------------
+REGISTER_FIRST_NAME = "#register-firstName"
+REGISTER_LAST_NAME = "#register-lastName"
+REGISTER_POSTAL_CODE = "#register-postalCode"
+REGISTER_EMAIL = "#register-email"
+REGISTER_PHONE = "#register-phone"
+REGISTER_PASSWORD = "#register-password"
+REGISTER_CONSENT = "#register-consent"
+# у <select> города нет id/name — держимся за autocomplete (в оформлении есть #checkout-city)
+REGISTER_CITY = 'select[autocomplete="address-level2"]'
+REGISTER_SUBMIT = "button[type=submit]"
+REGISTER_ALERT = "div[role=alert]"
+REGISTER_FIELD_ERROR = "span.field-error"
+# Captcha.tsx открывает проверку модальным <dialog> (showModal) c h2 «Bezbednosna provera».
+# Атрибута role у него нет, поэтому берём сам тег, а не [role=dialog].
+CAPTCHA_DIALOG = "dialog"
+
 ADD_TO_CART_RE = re.compile(r"korpu|cart", re.I)
 CONFIRMED_RE = re.compile(r"porud.?bina je primljena", re.I)
 # vitrina умеет печатать надписи и с диакритикой, поэтому гласные — через «.»
 ORDER_NUMBER_RE = re.compile(r"broj porud.?bine\D*(\d+)", re.I)
 ORDER_NUMBER_FALLBACK_RE = re.compile(r"#(\d{2,})")
+
+REGISTER_TITLE_RE = re.compile(r"napravi nalog", re.I)
+REGISTER_SEND_RE = re.compile(r"po.+?alji kod", re.I)
+# vitrina умеет печатать и с диакритикой, поэтому гласные — через «.»;
+# первая ветка — ошибка «проверка не пройдена», вторая — само окно Turnstile
+CAPTCHA_TITLE_RE = re.compile(r"bezbednosna prover|proveravamo, da niste bot", re.I)
+CODE_SENT_RE = re.compile(r"potvrdite\s+e-?mail", re.I)
 
 CART_ID_KEY = "tb_cart_id"
 
@@ -295,3 +322,67 @@ class Storefront:
         if tab.count():
             tab.first.click()
         self.page.wait_for_timeout(1200)
+
+    # --- регистрация ---------------------------------------------------------------
+    def goto_register(self) -> None:
+        """Страница регистрации: адрес может остаться «старым» (rewrite), ждём саму форму."""
+        self.page.goto("/rs/account/register", wait_until="domcontentloaded")
+        self.page.locator(REGISTER_FIRST_NAME).first.wait_for(state="visible", timeout=30_000)
+
+    def registration_title(self) -> str:
+        return self.page.locator("h1").first.inner_text().strip()
+
+    def set_registration_details(self, data: dict) -> None:
+        self.page.fill(REGISTER_FIRST_NAME, data["firstName"])
+        self.page.fill(REGISTER_LAST_NAME, data["lastName"])
+        self.page.fill(REGISTER_POSTAL_CODE, data["postalCode"])
+        city = self.page.locator(REGISTER_CITY)
+        if city.count():
+            # опции города без id/name и без порядка списка — выбор только по label
+            city.select_option(label=data.get("city") or "Beograd")
+        self.page.fill(REGISTER_EMAIL, data["email"])
+        self.page.fill(REGISTER_PHONE, data["phone"])
+        self.page.fill(REGISTER_PASSWORD, data["password"])
+        consent = self.page.locator(REGISTER_CONSENT)
+        if consent.count() and not consent.is_checked():
+            consent.check()
+
+    def selected_city(self) -> str:
+        """Значение <select> города — ловит промах «выбор по индексу» на живом стенде."""
+        return self.page.locator(REGISTER_CITY).first.input_value()
+
+    def registration_errors(self) -> str:
+        """Ошибки витрины по полям — чтобы падение было с внятной причиной."""
+        bits = []
+        for sel in (REGISTER_ALERT, REGISTER_FIELD_ERROR):
+            node = self.page.locator(sel)
+            for i in range(node.count()):
+                bits.append(node.nth(i).inner_text().strip())
+        return " | ".join(b for b in bits if b)
+
+    def submit_registration(self) -> None:
+        """«Pošalji kod za potvrdu»: сначала валидация полей, потом капча Turnstile."""
+        self._click_first(REGISTER_SUBMIT, REGISTER_SEND_RE)
+
+    def wait_for_captcha_gate(self, timeout_ms: int = 20_000) -> str:
+        """Ждёт состояния проверки «вы не бот» и возвращает её текст.
+
+        Витрина показывает либо модальное окно <dialog> с виджетом Turnstile
+        («Proveravamo, da niste bot»), либо — когда токен не выдан — ошибку
+        «Bezbednosna provera nije uspela». Пустая строка: за отведённое время
+        проверка не появилась вообще.
+        """
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while time.monotonic() < deadline:
+            for selector in (CAPTCHA_DIALOG, REGISTER_ALERT):
+                nodes = self.page.locator(selector)
+                for i in range(nodes.count()):
+                    text = nodes.nth(i).inner_text().strip()
+                    if text and CAPTCHA_TITLE_RE.search(text):
+                        return text
+            time.sleep(0.5)
+        return ""
+
+    def registration_otp_requested(self) -> bool:
+        """Появился ли экран подтверждения почты (поле для кода из письма)."""
+        return self.page.locator("input[autocomplete='one-time-code']").count() > 0

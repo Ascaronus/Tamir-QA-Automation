@@ -7,6 +7,7 @@ import uuid
 
 import pytest
 
+from qa import net
 from qa.config import QaConfig, load_config
 from qa.http import QaHttpClient
 from qa.steps import dump as dump_steps, has_recorded
@@ -16,6 +17,17 @@ from qa.steps import tracked_step
 @pytest.fixture(scope="session")
 def config() -> QaConfig:
     return load_config()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _host_overrides(config: QaConfig) -> None:
+    """Закрепляет хосты за адресами, если задан `QA_HOST_OVERRIDES`.
+
+    Нужно только локальным прогонам, когда на машине не работает системный
+    DNS-резолвер (подробности в `qa/net.py`). В CI переменная не задана, и
+    фикстура не делает ничего; тот же список уходит флагам Chromium ниже.
+    """
+    net.install_getaddrinfo_patch(config.host_overrides)
 
 
 # --------------------------------------------------------------------------- шаги кейса
@@ -81,6 +93,18 @@ def base_url(config: QaConfig) -> str:
     запрещает и guard, и здравый смысл.
     """
     return config.web_url
+
+
+@pytest.fixture(scope="session")
+def browser_type_launch_args(browser_type_launch_args: dict, config: QaConfig) -> dict:
+    """Добавляет браузеру те же соответствия хостов, что и Python-клиентам.
+
+    Chromium резолвит имена сам, поэтому одного `QA_HOST_OVERRIDES` в процессе
+    pytest для него мало.
+    """
+    args = list(browser_type_launch_args.get("args") or [])
+    args += net.chromium_args(config.host_overrides)
+    return {**browser_type_launch_args, "args": args}
 
 
 @pytest.fixture(scope="session")

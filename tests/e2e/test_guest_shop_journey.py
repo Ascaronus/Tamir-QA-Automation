@@ -54,6 +54,7 @@ def _cleanup_guest_carts(api_client):
 
 
 def test_guest_buy_from_catalog_to_order(page, steps, admin_client: MedusaAdminClient):
+    """Гость покупает: каталог → карточка → корзина → оформление → номер заказа."""
     shop = Storefront(page)
 
     with steps("Открыть каталог и выбрать первый товар", "список товаров, карточка открывается"):
