@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from qa.net import ENV_VAR, parse_overrides
 from urllib.parse import urlsplit
 
 # Разрешённые хосты (M1): только стенд и локальная сеть стека на staging-хосте.
@@ -137,6 +139,8 @@ class QaConfig:
     reports_url: str = "https://qa.tamir.rs"
     #: имя сборки в Kiwi TCMS — одно и то же значение используют seed и sync
     build_name: str = "staging"
+    #: закрепление хостов за адресами (обход сломанного системного DNS, см. qa/net.py)
+    host_overrides: dict[str, str] = field(default_factory=dict)
 
     @property
     def is_staging(self) -> bool:
@@ -191,6 +195,7 @@ def load_config() -> QaConfig:
         tcms_url=os.getenv("TCMS_URL", "https://tcms.tamir.rs").rstrip("/"),
         reports_url=os.getenv("REPORTS_URL", "https://qa.tamir.rs").rstrip("/"),
         build_name=os.getenv("QA_BUILD_NAME", "staging").strip() or "staging",
+        host_overrides=parse_overrides(os.getenv(ENV_VAR)),
     )
     # Конфигурация не должна случайно указать на проду.
     require_allowed_target(config.web_url)
