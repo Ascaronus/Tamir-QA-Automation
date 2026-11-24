@@ -221,6 +221,84 @@ def attach_cases(
     return added
 
 
+def prune_stale_cases(
+    client: TcmsClient,
+    *,
+    plan_id: int,
+    run_id: int,
+    keep: set[str],
+    note: str,
+) -> int:
+    """Отвязывает от плана и рана кейсы, тестов которых больше нет в репозитории.
+
+    Иначе отчёт врёт: в прогоне висят проверки, которые мы сознательно убрали
+    (например свёрнутая SEO-проверка), и они вечно стоят IDLE/BLOCKED.
+    `TestCase.delete` в XML-RPC Kiwi 17 нет, поэтому кейс остаётся в базе
+    с пометкой в `notes` — история исполнений сохраняется, а план и ран
+    соответствуют текущему набору тестов.
+    """
+    attached = {int(row["id"]) for row in client.rows("TestCase", {"plan__exact": plan_id})}
+    attached |= {int(row["case"]) for row in client.rows("TestExecution", {"run": run_id})}
+    stale = [
+        (int(case["id"]), script)
+        for case in client.rows("TestCase", {"is_automated": 1})
+        if int(case["id"]) in attached
+        and (script := (case.get("script") or "").strip())
+        and script not in keep
+    ]
+    for case_id, script in stale:
+        for method, parent_id in (("TestPlan.remove_case", plan_id), ("TestRun.remove_case", run_id)):
+            try:
+                # в Kiwi 17 remove_case принимает один id, список даёт Internal error
+                client.call(method, parent_id, case_id)
+            except TcmsError as exc:
+                print(f"  ! {method}({parent_id}, {case_id}): {exc}")
+        try:
+            client.update("TestCase", case_id, {"notes": note})
+        except TcmsError as exc:
+            print(f"  ! TestCase.update({case_id}, notes): {exc}")
+        print(f"  - TestCase {case_id}: {script}")
+    return len(stale)
+
+
+ARCHIVE_PREFIX = "Архив: "
+
+
+def archive_other_plans(client: TcmsClient, *, keep_plan_id: int, keep_run_id: int, note: str) -> int:
+    """Уводит планы и раны, которые сидер больше не ведёт, в архив.
+
+    Исторические прогоны (например ранний набор smoke-проверок) остаются в
+    базе — по ним видно, что и когда падало, но в списке активных они больше
+    не мешаются: план становится неактивным, а в названии рана префикс
+    «Архив: ». Иначе в TCMS два «главных» прогона, и непонятно, какой актуален.
+    """
+    archived = 0
+    for plan in client.rows("TestPlan", {}):
+        plan_id = int(plan["id"])
+        if plan_id == keep_plan_id:
+            continue
+        try:
+            client.update("TestPlan", plan_id, {"is_active": False, "notes": note})
+        except TcmsError as exc:
+            print(f"  ! TestPlan.update({plan_id}): {exc}")
+            continue
+        for row in client.rows("TestRun", {"plan": plan_id}):
+            run_id = int(row["id"])
+            if run_id == keep_run_id:
+                continue
+            summary = (row.get("summary") or "").strip()
+            payload: dict[str, object] = {"notes": note}
+            if not summary.startswith(ARCHIVE_PREFIX):
+                payload["summary"] = f"{ARCHIVE_PREFIX}{summary}"
+            try:
+                client.update("TestRun", run_id, payload)
+            except TcmsError as exc:
+                print(f"  ! TestRun.update({run_id}): {exc}")
+        print(f"  архив: план {plan_id} ({plan.get('name')})")
+        archived += 1
+    return archived
+
+
 def attach_case_texts(cases: list[dict[str, str]], steps_file: str | None) -> dict[str, int]:
     """Заполняет `case_text` кейсов: шаги прогона, иначе докстринг, иначе имя теста.
 
@@ -258,6 +336,11 @@ def main(argv: list[str] | None = None) -> int:
         "--steps-file",
         default=DEFAULT_STEPS_FILE,
         help=f"шаги из прогона, пишет pytest_sessionfinish (по умолчанию {DEFAULT_STEPS_FILE})",
+    )
+    parser.add_argument(
+        "--keep-stale",
+        action="store_true",
+        help="не отвязывать от плана и рана кейсы, тестов которых больше нет в репозитории",
     )
     args = parser.parse_args(argv)
 
@@ -347,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
     plan_id = int(plan["id"])
     try:
         # план мог быть переименован из старого — описание синхронизируем всегда
-        client.call("TestPlan.update", plan_id, {"text": PLAN_TEXT})
+        client.call("TestPlan.update", plan_id, {"text": PLAN_TEXT, "is_active": True})
     except TcmsError as exc:
         print(f"  ! TestPlan.update({plan_id}, text): {exc}")
     plan_cases = {int(row["id"]) for row in client.rows("TestCase", {"plan__exact": plan_id})}
@@ -376,6 +459,21 @@ def main(argv: list[str] | None = None) -> int:
     run_id = int(run["id"])
     run_cases = {int(row["case"]) for row in client.rows("TestExecution", {"run": run_id})}
     print(f"  кейсов в ране {run_id}: было {len(run_cases)}, добавлено {attach_cases(client, 'TestRun.add_case', run_id, case_ids, run_cases)}")
+
+    if args.keep_stale:
+        print("  устаревшие кейсы оставлены (--keep-stale)")
+    else:
+        note = (
+            "Теста больше нет в репозитории, кейс отвязан от плана и тест-рана "
+            "этим сидером. Исторические исполнения сохранены."
+        )
+        print(
+            f"  устаревших кейсов отвязано: "
+            f"{prune_stale_cases(client, plan_id=plan_id, run_id=run_id, keep={case['nodeid'] for case in cases}, note=note)}"
+        )
+
+    archive_note = "План и его прогоны больше не ведёт tcms_seed; оставлены ради истории исполнений."
+    print(f"  ушло в архив планов: {archive_other_plans(client, keep_plan_id=plan_id, keep_run_id=run_id, note=archive_note)}")
 
     summary = client.ping()
     print("итог:", ", ".join(f"{key}={value}" for key, value in summary.items()))
