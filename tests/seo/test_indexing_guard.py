@@ -50,8 +50,25 @@ NOT_FOUND_ROUTES = ("/xx", "/rs/net-takoj-stranice")
 CLOSE_DIRECTIVE = "noindex"
 
 
+def _open_route(route: str, response) -> str | None:
+    """Почему маршрут открыт индексации, или `None`, если закрыт.
+
+    Сообщение сразу содержит статус, финальный адрес и разобранные директивы:
+    так из одной строчки в отчёте видно, где именно дыра.
+    """
+    directives = page_robots_directives(response.headers, response.text)
+    if CLOSE_DIRECTIVE in directives:
+        return None
+    return (
+        f"{route} (статус {response.status_code}, финальный адрес "
+        f"{response.url!r}, X-Robots-Tag="
+        f"{response.headers.get('x-robots-tag')!r}, разобранные "
+        f"директивы {sorted(directives) or 'нет'})"
+    )
+
+
 @pytest.mark.seo
-def test_staging_zakryt_ot_indeksacii(config, web_client):
+def test_staging_zakryt_ot_indeksacii(config, web_client, steps):
     """Стенд закрыт от поисковых систем: `noindex` на ключевых маршрутах.
 
     Один тест-кейс, две стороны одной гарантии:
@@ -71,31 +88,33 @@ def test_staging_zakryt_ot_indeksacii(config, web_client):
     #: прогона видно полную картину.
     open_routes: list[str] = []
 
-    for route in (*KEY_ROUTES, *NOT_FOUND_ROUTES):
-        response = web_client.get(route)
-        directives = page_robots_directives(response.headers, response.text)
-        if CLOSE_DIRECTIVE not in directives:
-            open_routes.append(
-                f"{route} (статус {response.status_code}, финальный адрес "
-                f"{response.url!r}, X-Robots-Tag="
-                f"{response.headers.get('x-robots-tag')!r}, разобранные "
-                f"директивы {sorted(directives) or 'нет'})"
-            )
+    with steps("Открыть ключевые страницы витрины", "Все закрыты директивой `noindex`"):
+        for route in KEY_ROUTES:
+            broken = _open_route(route, web_client.get(route))
+            if broken:
+                open_routes.append(broken)
+
+    with steps("Открыть адреса, которых не существует", "Ответ `404` тоже закрыт `noindex`"):
+        for route in NOT_FOUND_ROUTES:
+            broken = _open_route(route, web_client.get(route))
+            if broken:
+                open_routes.append(broken)
 
     assert not open_routes, (
         f"{config.web_url} открыт индексации: на маршрутах нет `noindex` — "
         + "; ".join(open_routes)
     )
 
-    robots = web_client.get("/robots.txt")
-    assert robots.status_code == 200, (
-        f"/robots.txt отвечает {robots.status_code} — нечем закрыть обход стенда"
-    )
-    parsed = parse_robots_txt(robots.text)
-    staging_hosts = {host_of(config.web_url), host_of(config.api_url)}
-    staging_sitemaps = [sm for sm in parsed.sitemaps if host_of(sm) in staging_hosts]
-    assert not staging_sitemaps, (
-        "/robots.txt указывает поисковым системам sitemap стенда "
-        f"{staging_sitemaps} — страницы закрыты `noindex`, но их адреса всё "
-        "равно попадут в индекс"
-    )
+    with steps("Открыть `/robots.txt`", "Ответ 200, ссылок на sitemap стенда нет"):
+        robots = web_client.get("/robots.txt")
+        assert robots.status_code == 200, (
+            f"/robots.txt отвечает {robots.status_code} — нечем закрыть обход стенда"
+        )
+        parsed = parse_robots_txt(robots.text)
+        staging_hosts = {host_of(config.web_url), host_of(config.api_url)}
+        staging_sitemaps = [sm for sm in parsed.sitemaps if host_of(sm) in staging_hosts]
+        assert not staging_sitemaps, (
+            "/robots.txt указывает поисковым системам sitemap стенда "
+            f"{staging_sitemaps} — страницы закрыты `noindex`, но их адреса всё "
+            "равно попадут в индекс"
+        )
