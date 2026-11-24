@@ -185,16 +185,30 @@ def _load_dotenv_once() -> None:
     load_dotenv(override=False)
 
 
+def _env(name: str, default: str) -> str:
+    """Значение переменной окружения или дефолт.
+
+    Пустая строка считается «переменной нет». В GitHub Actions это не теоретический
+    случай: запись `WEB_URL: ${{ vars.WEB_URL }}` при незаполненной переменной
+    репозитория выставляет пустую строку, а `os.getenv(name, default)` вернул бы её
+    как валидное значение, и тесты ушли бы на пустой адрес.
+    """
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
+
+
 def load_config() -> QaConfig:
     """Собирает конфигурацию из переменных окружения с staging-дефолтами."""
     _load_dotenv_once()
     config = QaConfig(
-        env=os.getenv("QA_ENV", "staging").strip() or "staging",
-        web_url=os.getenv("WEB_URL", "https://test.tamir.rs").rstrip("/"),
-        api_url=os.getenv("API_URL", "https://test-api.tamir.rs").rstrip("/"),
-        tcms_url=os.getenv("TCMS_URL", "https://tcms.tamir.rs").rstrip("/"),
-        reports_url=os.getenv("REPORTS_URL", "https://qa.tamir.rs").rstrip("/"),
-        build_name=os.getenv("QA_BUILD_NAME", "staging").strip() or "staging",
+        env=_env("QA_ENV", "staging"),
+        web_url=_env("WEB_URL", "https://test.tamir.rs").rstrip("/"),
+        api_url=_env("API_URL", "https://test-api.tamir.rs").rstrip("/"),
+        tcms_url=_env("TCMS_URL", "https://tcms.tamir.rs").rstrip("/"),
+        reports_url=_env("REPORTS_URL", "https://qa.tamir.rs").rstrip("/"),
+        build_name=_env("QA_BUILD_NAME", "staging"),
         host_overrides=parse_overrides(os.getenv(ENV_VAR)),
     )
     # Конфигурация не должна случайно указать на проду.

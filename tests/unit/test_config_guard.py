@@ -9,7 +9,13 @@ from __future__ import annotations
 import pytest
 import requests
 
-from qa.config import QaConfig, is_allowed_target, require_allowed_target, site_origin_for
+from qa.config import (
+    QaConfig,
+    is_allowed_target,
+    load_config,
+    require_allowed_target,
+    site_origin_for,
+)
 from qa.http import QaHttpClient
 
 pytestmark = pytest.mark.unit
@@ -126,3 +132,45 @@ def test_config_site_origin_falls_back_to_own_origin() -> None:
 def test_config_expects_noindex_on_staging() -> None:
     config = QaConfig(env="staging", web_url="https://test.tamir.rs", api_url="https://test-api.tamir.rs")
     assert config.expects_noindex is True
+
+
+# --- Пустые переменные окружения (CI) ---------------------------------------
+# Запись `WEB_URL: ${{ vars.WEB_URL }}` в workflow при незаполненной переменной
+# репозитория выставляет пустую строку. `os.getenv(name, default)` вернул бы её# как значение, и прогон ушёл бы на пустой адрес (так и случилось в первом
+# e2e-прогоне), поэтому пустое значение читается как «переменной нет».
+
+EMPTY_ENV_CASES = ["", "   ", "\t"]
+
+
+@pytest.mark.parametrize("value", EMPTY_ENV_CASES)
+def test_blank_url_env_falls_back_to_staging_default(monkeypatch, value: str) -> None:
+    for name in ("WEB_URL", "API_URL", "TCMS_URL", "REPORTS_URL"):
+        monkeypatch.setenv(name, value)
+    config = load_config()
+    assert config.web_url == "https://test.tamir.rs"
+    assert config.api_url == "https://test-api.tamir.rs"
+    assert config.tcms_url == "https://tcms.tamir.rs"
+    assert config.reports_url == "https://qa.tamir.rs"
+
+
+def test_blank_env_name_falls_back_to_staging(monkeypatch) -> None:
+    for name in ("QA_ENV", "QA_BUILD_NAME"):
+        monkeypatch.setenv(name, "  ")
+    config = load_config()
+    assert config.env == "staging"
+    assert config.build_name == "staging"
+
+
+def test_filled_env_wins_and_trailing_slash_is_trimmed(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_URL", " https://test.tamir.rs/ ")
+    monkeypatch.setenv("API_URL", "https://test-api.tamir.rs/")
+    config = load_config()
+    assert config.web_url == "https://test.tamir.rs"
+    assert config.api_url == "https://test-api.tamir.rs"
+
+
+def test_production_url_in_env_is_still_refused(monkeypatch) -> None:
+    """Защита от проду важнее дефолтов: даже заполненная переменная не пройдёт."""
+    monkeypatch.setenv("WEB_URL", "https://tamir.rs")
+    with pytest.raises(RuntimeError):
+        load_config()
