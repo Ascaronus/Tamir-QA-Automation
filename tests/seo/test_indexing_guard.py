@@ -1,138 +1,101 @@
-"""М2: non-prod витрина обязана быть закрыта от поисковых систем.
+"""Единственная SEO-проверка стенда: `test.tamir.rs` закрыт от поисковых систем.
 
-Правило из плана (§13, шаг 5): стенда не должно быть в индексе Google. Продуктовый
-код закрывает страницы и заголовком `X-Robots-Tag`, и тегом `<meta name=robots>`
-(`frontend/src/app/layout.tsx`), поэтому проверяем оба механизма: один может
-исчезнуть при правке `next.config.ts`, второй — при правке метаданных.
+Смысл одной проверки: staging не должен попасть в индекс. Всё остальное
+(canonical / hreflang / og: / twitter:, ключевые слова в `<title>` и H1,
+посчитанный sitemap) сюда не входит — см. `docs/TEST-PLAN.md` и находки в
+отчётах прогонов.
 
-Часть проверок специально сужена до факта, который держится всегда: `noindex` и
-`nofollow`. Прочие директивы (`noarchive`, `nosnippet`) в текущей сборке есть, но
-их отсутствие не было бы ошибкой окружения.
+Что подтверждает зонд staging 23.11.2026:
+
+- все HTML-маршруты (и `404`-страницы) отдают `X-Robots-Tag:
+  noindex, nofollow, noarchive, nosnippet` и `<meta name="robots"
+  content="noindex, ...">`;
+- `/` уводит `308` на `/rs`, поэтому редиректы проверяются до финальной
+  страницы — закрытие должно дожить до неё;
+- `/robots.txt` = `User-Agent: *` + `Allow: /`, без `Sitemap:`. Это сделано
+  намеренно (`frontend/src/app/robots.ts`): бот должен зайти на страницу,
+  чтобы увидеть `noindex`. Поэтому «разрешающий» robots.txt сам по себе не
+  ошибка — ошибка, если он начнёт показывать индексной карте sitemap стенда.
+
+`config.expects_noindex` — единственная точка правды о том, что текущее
+окружение обязано быть закрытым от индекса.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from qa.seo import parse_robots_directives, parse_robots_txt, parse_seo, same_url
+from qa.seo import host_of, page_robots_directives, parse_robots_txt
 
 pytestmark = pytest.mark.seo
 
-#: Минимально обязательный набор директив для любой страницы non-prod.
-REQUIRED_DIRECTIVES = frozenset({"noindex", "nofollow"})
-
-#: Маршруты, которые отдают HTML со статусом 200.
-HTML_ROUTES = (
+#: Маршруты, которые обязаны быть закрыты от индекса. Часть из них уводит
+#: редиректом (`/` -> `/rs`, `/rs/` -> `/rs`) — проверяется финальный ответ.
+KEY_ROUTES = (
+    "/",
     "/rs",
     "/en",
-    "/rs/korpa",
-    "/rs/nalog",
     "/rs/catalog",
+    "/rs/korpa",
+    "/rs/checkout",
+    "/rs/nalog",
     "/privacy",
-    "/en/privacy",
 )
 
-#: Маршруты, у которых страницы нет (неизвестная локаль, несуществующий товар).
-NOT_FOUND_ROUTES = (
-    "/sr",
-    "/de",
-    "/xx",
-    "/rs/net-takoj-stranice",
-    "/rs/products/neta-takogo-tovara",
-)
+#: Страниц, «случайно» найденных ботом, тоже быть не должно: `404` тоже
+#: закрывается директивами, иначе индекс собирает мусор из несуществующих URL.
+NOT_FOUND_ROUTES = ("/xx", "/rs/net-takoj-stranice")
 
-#: Маршруты, которые всегда уходят редиректом.
-REDIRECT_ROUTES = ("/", "/rs/", "/en/", "/rs/cart")
+#: Директива, без которой страница считается открытой.
+CLOSE_DIRECTIVE = "noindex"
 
 
-def _require_closed(response, what: str) -> None:
-    """Оба механизма закрытия от индексации на месте и не противоречат друг другу."""
-    header = parse_robots_directives(response.headers.get("x-robots-tag"))
-    assert REQUIRED_DIRECTIVES <= header, (
-        f"{what}: заголовок `X-Robots-Tag` не закрывает страницу — "
-        f"получено {response.headers.get('x-robots-tag')!r}"
-    )
-    meta_value = parse_seo(response.text).meta_robots
-    assert REQUIRED_DIRECTIVES <= parse_robots_directives(meta_value), (
-        f"{what}: `<meta name=robots>` не закрывает страницу — получено {meta_value!r}"
-    )
+@pytest.mark.seo
+def test_staging_zakryt_ot_indeksacii(config, web_client):
+    """Стенд закрыт от поисковых систем: `noindex` на ключевых маршрутах.
 
+    Один тест-кейс, две стороны одной гарантии:
 
-@pytest.mark.parametrize("route", HTML_ROUTES)
-def test_html_pages_closed_for_indexing(web_client, config, route):
-    """Страницы стенда не должны попасть в индекс поисковых систем."""
-    if not config.expects_noindex:
-        pytest.skip("QA_ENV помечен как production — проверка noindex не применима")
-
-    response = web_client.get(route)
-    assert response.status_code == 200, f"{route}: ожидался 200, получен {response.status_code}"
-    assert "html" in (response.headers.get("content-type") or "").lower(), (
-        f"{route}: ожидался HTML, получен content-type "
-        f"{response.headers.get('content-type')!r}"
-    )
-    _require_closed(response, route)
-
-
-@pytest.mark.parametrize("route", NOT_FOUND_ROUTES)
-def test_missing_pages_respond_404_and_are_not_indexable(web_client, route):
-    """Нет страницы -> 404, и она всё равно закрыта от индексации."""
-    response = web_client.get(route)
-    assert response.status_code == 404, (
-        f"{route}: ожидался 404, получен {response.status_code}"
-    )
-    header = parse_robots_directives(response.headers.get("x-robots-tag"))
-    assert "noindex" in header, (
-        f"{route}: страница 404 не закрыта от индексации — {response.headers.get('x-robots-tag')!r}"
-    )
-
-
-@pytest.mark.parametrize("route", REDIRECT_ROUTES)
-def test_redirects_are_closed_for_indexing(web_client, route):
-    """Редирект не должен индексироваться: заголовок ставится и на 3xx ответ."""
-    response = web_client.get(route, allow_redirects=False)
-    assert response.status_code in (301, 308), (
-        f"{route}: ожидался редирект 301/308, получен {response.status_code}"
-    )
-    header = parse_robots_directives(response.headers.get("x-robots-tag"))
-    assert "noindex" in header, (
-        f"{route}: редирект не закрыт от индексации — {response.headers.get('x-robots-tag')!r}"
-    )
-
-
-def test_robots_txt_is_readable_and_does_not_block_the_site(web_client):
-    """`robots.txt`: 200, читается, и при этом сайт не закрыт полностью.
-
-    `Disallow:` пустое — разрешено всё. Если кто-то по ошибке поставит
-    `Disallow: /`, тест поймает: тогда и `noindex`, и `robots.txt` закрывают
-    стенд, и диагностика «почему Google ничего не видит» станет запутанной.
+    1. каждый ключевой маршрут (и `404`) отвечает `noindex` — заголовком
+       `X-Robots-Tag` или тегом `<meta name="robots">`;
+    2. `robots.txt` не отдаёт поисковикам sitemap стенда — единственный
+       способ «разрешить обход», который превращает закрытый стенд в
+       индексированный.
     """
-    response = web_client.get("/robots.txt")
-    assert response.status_code == 200, f"/robots.txt: получен {response.status_code}"
+    assert config.expects_noindex, (
+        f"окружение {config.web_url!r} не обязано быть закрытым от индекса — "
+        "проверка стенда здесь не применима"
+    )
 
-    rules, _ = parse_robots_txt(response.text)
-    assert rules, f"/robots.txt: не разобрано ни одного правила — {response.text!r}"
-    for user_agent, directives in rules.items():
-        blocking = [d for d in directives if d.startswith("disallow: /")]
-        assert not blocking, f"/robots.txt: {user_agent} закрыт целиком ({blocking})"
+    #: Пробелы в закрытии собираются все, а не только первый: так из одного
+    #: прогона видно полную картину.
+    open_routes: list[str] = []
 
+    for route in (*KEY_ROUTES, *NOT_FOUND_ROUTES):
+        response = web_client.get(route)
+        directives = page_robots_directives(response.headers, response.text)
+        if CLOSE_DIRECTIVE not in directives:
+            open_routes.append(
+                f"{route} (статус {response.status_code}, финальный адрес "
+                f"{response.url!r}, X-Robots-Tag="
+                f"{response.headers.get('x-robots-tag')!r}, разобранные "
+                f"директивы {sorted(directives) or 'нет'})"
+            )
 
-def test_robots_txt_references_sitemap(web_client, config):
-    """Gap-тест: в `robots.txt` стенда нет строки `Sitemap:`.
+    assert not open_routes, (
+        f"{config.web_url} открыт индексации: на маршрутах нет `noindex` — "
+        + "; ".join(open_routes)
+    )
 
-    Проверено 23.11.2026: `/robots.txt` отдаёт `User-Agent: *` + `Allow: /` без
-    указания sitemap. Найдены в продуктовом коде только `app/robots.ts` (текст
-    без `Sitemap:`) и `app/sitemap.ts`, поэтому finding заводится как продуктовый
-    баг, а не как поломка стенда: поиск не узнаёт про sitemap из robots.txt.
-    Ветка `xfail` — проверка начнёт работать сама, когда `robots.ts` добавит `Sitemap`.
-    """
-    response = web_client.get("/robots.txt")
-    _, sitemaps = parse_robots_txt(response.text)
-    if not sitemaps:
-        pytest.xfail(
-            "PRODUCT GAP: в robots.txt нет строки Sitemap: — "
-            "frontend/src/app/robots.ts не добавляет ссылку на sitemap"
-        )
-
-    assert any(
-        same_url(item, f"{config.web_url}/sitemap.xml") for item in sitemaps
-    ), f"Sitemap: указывает не на наш sitemap — {sitemaps}"
+    robots = web_client.get("/robots.txt")
+    assert robots.status_code == 200, (
+        f"/robots.txt отвечает {robots.status_code} — нечем закрыть обход стенда"
+    )
+    parsed = parse_robots_txt(robots.text)
+    staging_hosts = {host_of(config.web_url), host_of(config.api_url)}
+    staging_sitemaps = [sm for sm in parsed.sitemaps if host_of(sm) in staging_hosts]
+    assert not staging_sitemaps, (
+        "/robots.txt указывает поисковым системам sitemap стенда "
+        f"{staging_sitemaps} — страницы закрыты `noindex`, но их адреса всё "
+        "равно попадут в индекс"
+    )

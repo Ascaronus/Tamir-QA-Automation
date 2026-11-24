@@ -1,8 +1,9 @@
 """Юнит-проверки парсеров `qa/seo.py` (без сети).
 
-Парсеры — единственное, между чем «сырой HTML стенда» и утверждениями тестов.
-Если они врут, SEO-проверки M2 либо пропускают поломку, либо красят прогон на
-ровном месте, поэтому здесь зафиксированы реальные формы ответов Next.
+Парсеры — единственное, что стоит между «сырым ответом стенда» и утверждениями
+единственной SEO-проверки («стенд закрыт от индекса»). Если они врут, проверка
+либо пропускает открытие стенда индексации, либо красит прогон на ровном месте,
+поэтому здесь зафиксированы реальные формы ответов staging.
 """
 
 from __future__ import annotations
@@ -10,76 +11,84 @@ from __future__ import annotations
 import pytest
 
 from qa.seo import (
-    has_json_ld,
-    hosts_of,
-    is_html,
-    normalize_url,
+    RobotsTxt,
+    host_of,
+    page_robots_directives,
     parse_robots_directives,
     parse_robots_txt,
-    parse_seo,
-    parse_sitemap,
-    path_of,
-    same_url,
 )
 
 pytestmark = pytest.mark.unit
 
-#: Фрагмент `<head>` страницы товара: Next эмитит `hrefLang` в верблюжьем
-#: регистре, canonical — на публичный домен, JSON-LD — отдельным скриптом.
-PRODUCT_HEAD = """
-<html><head>
-<link rel="canonical" href="https://tamir.rs/rs/products/crni-zimski-klobuk"/>
-<link rel="alternate" hrefLang="sr" href="https://tamir.rs/rs/products/crni-zimski-klobuk"/>
-<link rel='alternate' hreflang='en' href='https://tamir.rs/en/products/black-winter-hat-for-men'/>
+#: Так `<meta name="robots">` выглядит в SSR-ответе Next (порядок атрибутов и
+#: кавычки реальные, из дампа `/rs/catalog` 23.11.2026).
+PAGE_WITH_META = """
+<html lang="sr"><head>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet"/>
-<meta name="description" content="Zimski klopu"/>
-<script type="application/ld+json">{"@type":"Product"}</script>
-<title>Klobuk</title>
-</head><body></body></html>
+</head><body><main></main></body></html>
 """
 
 
-def test_parse_seo_reads_canonical_and_alternates() -> None:
-    seo = parse_seo(PRODUCT_HEAD)
-    assert seo.canonical == "https://tamir.rs/rs/products/crni-zimski-klobuk"
-    assert set(seo.alternates) == {"sr", "en"}
-    assert seo.alternates["en"] == "https://tamir.rs/en/products/black-winter-hat-for-men"
-    assert seo.description == "Zimski klopu"
-    assert seo.has_json_ld is True
+# ---------------------------------------------------------------- robots.txt
 
 
-def test_parse_seo_reads_meta_robots_directives() -> None:
-    seo = parse_seo(PRODUCT_HEAD)
-    assert seo.meta_directives() == {"noindex", "nofollow", "noarchive", "nosnippet"}
-
-
-def test_parse_seo_survives_page_without_seo_tags() -> None:
-    """Страница 404 без SEO-тегов не должна ломать парсер."""
-    seo = parse_seo("<html><body><h1>404</h1></body></html>")
-    assert seo.canonical is None
-    assert seo.alternates == {}
-    assert seo.meta_robots is None
-    assert seo.has_json_ld is False
-
-
-def test_parse_seo_ignores_alternate_without_hreflang() -> None:
-    """`rel=alternate` без `hreflang` (например `media`) не попадает в карту."""
-    seo = parse_seo('<link rel="alternate" media="only screen and (max-width: 640px)" href="https://m.tamir.rs/rs"/>')
-    assert seo.alternates == {}
-
-
-def test_parse_seo_keeps_first_canonical() -> None:
-    """Дубли canonical — берём первый, как это делает поисковый робот."""
-    seo = parse_seo(
-        '<link rel="canonical" href="https://tamir.rs/rs"/>'
-        '<link rel="canonical" href="https://test.tamir.rs/rs"/>'
+def test_parse_robots_txt_reads_rules_and_sitemap() -> None:
+    body = (
+        "User-Agent: *\n"
+        "Disallow: /admin\n"
+        "Allow: /rs/\n"
+        "\n"
+        "# комментарий\n"
+        "Sitemap: https://tamir.rs/sitemap.xml\n"
     )
-    assert seo.canonical == "https://tamir.rs/rs"
+    parsed = parse_robots_txt(body)
+    assert parsed.allow == ("/rs/",)
+    assert parsed.disallow == ("/admin",)
+    assert parsed.sitemaps == ("https://tamir.rs/sitemap.xml",)
+    assert parsed.has_open_access is False
 
 
-def test_has_json_ld_accepts_other_attribute_order() -> None:
-    assert has_json_ld('<script defer type="application/ld+json">{}</script>') is True
-    assert has_json_ld('<script src="/ld.js"></script>') is False
+def test_parse_robots_txt_matches_staging_answer() -> None:
+    """Ровно так отвечает `/robots.txt` на staging 23.11.2026.
+
+    `Allow: /` без `Disallow` и без `Sitemap:` — намеренное поведение
+    фронтенда (`frontend/src/app/robots.ts`): бот должен зайти на страницу,
+    чтобы увидеть `noindex`. Парсер обязан это видеть, а не считать ошибкой.
+    """
+    parsed = parse_robots_txt("User-Agent: *\nAllow: /\n\n")
+    assert parsed == RobotsTxt(allow=("/",), disallow=(), sitemaps=())
+    assert parsed.has_open_access is True
+
+
+def test_parse_robots_txt_ignores_empty_disallow() -> None:
+    """`Disallow:` с пустым значением = «не запрещать ничего»."""
+    parsed = parse_robots_txt("User-Agent: *\nDisallow:\n")
+    assert parsed.disallow == ()
+    assert parsed.has_open_access is False
+
+
+def test_parse_robots_txt_keeps_only_general_agent() -> None:
+    """Правила конкретной группы юзер-эйджентов не подмешиваются в общее."""
+    body = (
+        "User-Agent: Googlebot\n"
+        "Disallow: /rs\n"
+        "\n"
+        "User-Agent: *\n"
+        "Allow: /\n"
+    )
+    parsed = parse_robots_txt(body)
+    assert parsed.allow == ("/",)
+    assert parsed.disallow == ()
+
+
+def test_parse_robots_txt_survives_bom_and_crlf() -> None:
+    """BOM и CRLF из реальных ответов не должны ломать разбор."""
+    parsed = parse_robots_txt("\ufeffUser-Agent: *\r\nDisallow: /korpa\r\n")
+    assert parsed.disallow == ("/korpa",)
+
+
+# ------------------------------------------------------------------ директивы
 
 
 def test_parse_robots_directives_handles_empty_and_spacing() -> None:
@@ -88,82 +97,68 @@ def test_parse_robots_directives_handles_empty_and_spacing() -> None:
     assert parse_robots_directives(" NOINDEX , nofollow ") == {"noindex", "nofollow"}
 
 
-def test_parse_robots_txt_reads_rules_and_sitemap() -> None:
-    body = (
-        "User-Agent: *\n"
-        "Disallow:\n"
-        "Allow: /rs/\n"
-        "\n"
-        "# комментарий\n"
-        "Sitemap: https://tamir.rs/sitemap.xml\n"
+def test_parse_robots_directives_keeps_unknown_values() -> None:
+    """Незнакомая директива остаётся видимой — её видно в сообщении теста."""
+    assert parse_robots_directives("noindex, max-snippet:-1") == {"noindex", "max-snippet:-1"}
+
+
+def test_page_robots_directives_reads_header() -> None:
+    """Закрытие заголовком `X-Robots-Tag` (так закрыты маршруты staging)."""
+    headers = {"x-robots-tag": "noindex, nofollow, noarchive, nosnippet"}
+    assert page_robots_directives(headers, "<html><body></body></html>") == {
+        "noindex",
+        "nofollow",
+        "noarchive",
+        "nosnippet",
+    }
+
+
+def test_page_robots_directives_reads_meta_tag() -> None:
+    """Закрытие тегом `<meta name="robots">`, когда заголовка нет."""
+    assert page_robots_directives({}, PAGE_WITH_META) == {
+        "noindex",
+        "nofollow",
+        "noarchive",
+        "nosnippet",
+    }
+
+
+def test_page_robots_directives_merges_both_mechanisms() -> None:
+    """Заголовок и мета объединяются: достаточно, чтобы закрыл хоть один."""
+    headers = {"x-robots-tag": "noindex"}
+    html = '<meta name="robots" content="nofollow"/>'
+    assert page_robots_directives(headers, html) == {"noindex", "nofollow"}
+
+
+def test_page_robots_directives_ignores_other_meta_tags() -> None:
+    """`description` и `google-site-verification` не должны давать директив."""
+    html = (
+        '<meta name="description" content="noindex"'
+        '><meta name="google-site-verification" content="noindex"/>'
     )
-    rules, sitemaps = parse_robots_txt(body)
-    assert rules == {"*": ["disallow: ", "allow: /rs/"]}
-    assert sitemaps == ["https://tamir.rs/sitemap.xml"]
+    assert page_robots_directives({}, html) == frozenset()
 
 
-def test_parse_robots_txt_without_sitemap_line() -> None:
-    """Так выглядит ответ стенда 23.11.2026 — тест на `Sitemap:` это подхватит."""
-    rules, sitemaps = parse_robots_txt("User-Agent: *\nAllow: /\n\n")
-    assert rules == {"*": ["allow: /"]}
-    assert sitemaps == []
+def test_page_robots_directives_accepts_single_quotes_and_other_order() -> None:
+    html = "<meta content='NOINDEX' name='Googlebot'>"
+    assert page_robots_directives({}, html) == {"noindex"}
 
 
-def test_parse_sitemap_reads_urlset() -> None:
-    body = (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-        "<url><loc>https://tamir.rs/rs</loc></url>"
-        "<url><loc>https://tamir.rs/en/products/x</loc></url>"
-        "</urlset>"
-    )
-    urls, nested = parse_sitemap(body)
-    assert urls == ["https://tamir.rs/rs", "https://tamir.rs/en/products/x"]
-    assert nested == []
+def test_page_robots_directives_empty_page_is_empty() -> None:
+    """Страница без заголовка и без меты открыта — тест обязан это поймать."""
+    assert page_robots_directives({}, "") == frozenset()
+    assert page_robots_directives({}, "<html><body><h1>404</h1></body></html>") == frozenset()
 
 
-def test_parse_sitemap_reads_sitemapindex() -> None:
-    body = (
-        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
-        "<sitemap><loc>https://tamir.rs/sitemap-products.xml</loc></sitemap>"
-        "</sitemapindex>"
-    )
-    urls, nested = parse_sitemap(body)
-    assert urls == []
-    assert nested == ["https://tamir.rs/sitemap-products.xml"]
+# ---------------------------------------------------------------------- хосты
 
 
-def test_parse_sitemap_accepts_empty_urlset_as_empty_result() -> None:
-    """Пустой `<urlset/>` стенда — это пустой список, а не ошибка парсинга."""
-    body = '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'
-    assert parse_sitemap(body) == ([], [])
+def test_host_of_reads_host_from_absolute_url() -> None:
+    assert host_of("https://test.tamir.rs/sitemap.xml") == "test.tamir.rs"
+    assert host_of("https://Test.Tamir.rs:443/sitemap.xml") == "test.tamir.rs"
 
 
-def test_parse_sitemap_returns_empty_for_broken_xml() -> None:
-    assert parse_sitemap("<urlset><url>") == ([], [])
-
-
-def test_url_helpers_treat_trailing_slash_as_equal() -> None:
-    assert same_url("https://test.tamir.rs/rs/", "https://test.tamir.rs/rs") is True
-    assert same_url("https://test.tamir.rs/rs", "https://test.tamir.rs/en") is False
-    assert normalize_url(None) == ""
-
-
-def test_hosts_of_collects_unique_hosts() -> None:
-    urls = [
-        "https://tamir.rs/rs",
-        "https://tamir.rs/en",
-        "https://Test.Tamir.rs/x",
-        "",
-    ]
-    assert hosts_of(urls) == {"tamir.rs", "test.tamir.rs"}
-
-
-def test_path_of_ignores_host_and_query() -> None:
-    assert path_of("https://tamir.rs/rs/catalog?page=2") == "/rs/catalog"
-
-
-def test_is_html_accepts_next_content_type() -> None:
-    assert is_html("text/html; charset=utf-8") is True
-    assert is_html("application/json") is False
-    assert is_html(None) is False
+def test_host_of_handles_relative_and_missing_values() -> None:
+    assert host_of("/sitemap.xml") == ""
+    assert host_of("tamir.rs/sitemap.xml") == "tamir.rs"
+    assert host_of(None) == ""

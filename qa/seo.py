@@ -1,189 +1,105 @@
-"""Разбор SEO-атрибутов из HTML, `robots.txt`, sitemap и SEO-заголовков.
+"""Разбор `robots.txt` и директив «не индексировать» из ответа стенда.
 
 Здесь только парсинг и нормализация — никаких запросов и никаких ожиданий.
 Ожидания живут в тестах, поэтому модуль проверяется офлайн юнит-тестами.
-Регэкспы терпимы к регистру имён атрибутов и к одинарным кавычкам: Next
-эмитит `hrefLang`, а в HTML из срезов/других версий порядок атрибутов свой.
+
+Обрезано до того, что нужно единственной SEO-проверке стенда («закрыт от
+индекса»): канонические URL, hreflang, og:/twitter: и sitemap здесь больше не
+разбираются — проверки этих атрибутов убраны из набора.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterable
-from urllib.parse import urljoin, urlsplit, urlunsplit
-from xml.etree import ElementTree
+from urllib.parse import urlsplit
 
-TAG_RE = re.compile(r"<(?:link|meta)\b[^>]*>", re.I)
-JSON_LD_RE = re.compile(r"<script\b[^>]*application/ld\+json", re.I)
-_ATTR_NAMES = ("rel", "href", "hreflang", "name", "property", "content")
+#: Директивы `X-Robots-Tag` / `<meta name="robots">`, которые мы умеем видеть.
+#: Неизвестные значения не выбрасываются: их видно в сообщении теста.
+_META_TAGS_RE = re.compile(r"<meta\b[^>]*>", re.I)
+_ATTR_RE = re.compile(r"""(\w+)\s*=\s*("([^"]*)"|'([^']*)')""")
+_ROBOTS_NAMES = ("robots", "googlebot")
 
 
 @dataclass(frozen=True)
-class SeoTags:
-    """SEO-атрибуты одной HTML-страницы."""
+class RobotsTxt:
+    """Разобранный `robots.txt`."""
 
-    canonical: str | None = None
-    #: hreflang -> href (`x-default`, если эмитирован, лежит здесь же)
-    alternates: dict[str, str] = field(default_factory=dict)
-    meta_robots: str | None = None
-    title: str | None = None
-    description: str | None = None
-    has_json_ld: bool = False
+    #: Правила для групп юзер-эйджентов: `*` — общее правило.
+    allow: tuple[str, ...] = ()
+    disallow: tuple[str, ...] = ()
+    #: Строки `Sitemap:` как в файле (обычно абсолютные URL).
+    sitemaps: tuple[str, ...] = field(default_factory=tuple)
+    #: Для какой группы правила: `*`, `googlebot`, ...
+    agent: str = "*"
 
-    def meta_directives(self) -> frozenset[str]:
-        """`meta name=robots` как множество директив в нижнем регистре."""
-        return parse_robots_directives(self.meta_robots)
-
-
-def _tag_attrs(tag: str) -> dict[str, str]:
-    attrs: dict[str, str] = {}
-    for name in _ATTR_NAMES:
-        match = re.search(
-            rf'\b{name}\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'<>]+))', tag, re.I
-        )
-        if match:
-            attrs[name] = next((g for g in match.groups() if g is not None), "")
-    return attrs
+    @property
+    def has_open_access(self) -> bool:
+        """Файл разрешает обход без ограничений (`Allow: /` и ни одного `Disallow`)."""
+        return bool(self.allow) and not self.disallow
 
 
-def parse_robots_directives(value: str | None) -> frozenset[str]:
-    """`"noindex, nofollow"` -> `{"noindex", "nofollow"}`."""
-    if not value:
-        return frozenset()
-    return frozenset(p.strip().lower() for p in value.split(",") if p.strip())
+def parse_robots_txt(text: str) -> RobotsTxt:
+    """Правила группы `User-Agent: *` и строки `Sitemap:`.
 
-
-def has_json_ld(html: str) -> bool:
-    """Есть ли на странице `<script type="application/ld+json">`."""
-    return bool(JSON_LD_RE.search(html))
-
-
-def parse_seo(html: str) -> SeoTags:
-    """Собирает canonical, hreflang, meta robots, description и факт JSON-LD."""
-    canonical: str | None = None
-    alternates: dict[str, str] = {}
-    meta_robots: str | None = None
-    description: str | None = None
-
-    for match in TAG_RE.finditer(html):
-        attrs = _tag_attrs(match.group(0))
-        if not attrs:
-            continue
-        rel = attrs.get("rel", "").strip().lower()
-        name = attrs.get("name", "").strip().lower()
-        if rel == "canonical" and canonical is None:
-            canonical = attrs.get("href")
-        elif rel == "alternate" and attrs.get("hreflang") and attrs.get("href"):
-            alternates.setdefault(attrs["hreflang"].strip().lower(), attrs["href"])
-        elif name == "robots" and meta_robots is None:
-            meta_robots = attrs.get("content")
-        elif name == "description" and description is None:
-            description = attrs.get("content")
-
-    return SeoTags(
-        canonical=canonical,
-        alternates=alternates,
-        meta_robots=meta_robots,
-        description=description,
-        has_json_ld=has_json_ld(html),
-    )
-
-
-def is_html(content_type: str | None) -> bool:
-    """Признак того, что тело ответа — HTML (а не JSON/картинка)."""
-    return "html" in (content_type or "").lower()
-
-
-def parse_robots_txt(body: str) -> tuple[dict[str, list[str]], list[str]]:
-    """`robots.txt` -> `(правила по user-agent, список из Sitemap:)`."""
-    rules: dict[str, list[str]] = {}
+    Файл читается посимвольно-по-строкам: BOM, комментарии и CRLF из
+    реальных ответов не должны ломать разбор. Правила других юзер-эйджентов
+    игнорируются — тест смотрит общее правило.
+    """
+    allow: list[str] = []
+    disallow: list[str] = []
     sitemaps: list[str] = []
-    current: str | None = None
-    for raw in body.splitlines():
+    current_agent = "*"
+    for raw in text.lstrip("\ufeff").splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line or ":" not in line:
             continue
-        key, _, value = line.partition(":")
-        key, value = key.strip().lower(), value.strip()
-        if key == "user-agent":
-            current = value.lower()
-            rules.setdefault(current, [])
-        elif key == "sitemap":
+        name, _, value = line.partition(":")
+        name = name.strip().lower()
+        value = value.strip()
+        if name == "user-agent":
+            current_agent = value or "*"
+        elif current_agent != "*":
+            continue
+        elif name == "allow" and value:
+            allow.append(value)
+        elif name == "disallow":
+            # `Disallow:` с пустым значением = «не запрещать ничего».
+            if value:
+                disallow.append(value)
+        elif name == "sitemap" and value:
             sitemaps.append(value)
-        elif key in ("allow", "disallow") and current is not None:
-            rules[current].append(f"{key}: {value.lower()}")
-    return rules, sitemaps
+    return RobotsTxt(allow=tuple(allow), disallow=tuple(disallow), sitemaps=tuple(sitemaps))
 
 
-def _local(tag: str) -> str:
-    """Имя XML-тега без namespace-префикса, в нижнем регистре."""
-    return tag.rsplit("}", 1)[-1].lower()
-
-
-def _locs(element) -> list[str]:
-    return [
-        child.text.strip()
-        for child in element.iter()
-        if _local(child.tag) == "loc" and child.text and child.text.strip()
-    ]
-
-
-def parse_sitemap(body: str) -> tuple[list[str], list[str]]:
-    """XML sitemap -> `(страницы, ссылки sitemapindex)`.
-
-    `<urlset>` даёт страницы во первом списке, `<sitemapindex>` — вложенные
-    sitemap'ы во втором. Нерабираемый XML — оба списка пустые (тест сам
-    решает, ошибка это или нет).
-    """
-    try:
-        root = ElementTree.fromstring(body.strip())
-    except ElementTree.ParseError:
-        return [], []
-    if _local(root.tag) == "sitemapindex":
-        return [], _locs(root)
-    return _locs(root), []
-
-
-def normalize_url(value: str | None) -> str:
-    """URL для сравнения: нижний регистр, без следего слэша и query-порядка."""
+def parse_robots_directives(value: str | None) -> frozenset[str]:
+    """Директивы из `X-Robots-Tag` (регистр не важен, значения через запятую)."""
     if not value:
-        return ""
-    return value.rstrip("/").lower()
+        return frozenset()
+    return frozenset(part.strip().lower() for part in value.split(",") if part.strip())
 
 
-def resolve_url(base: str, target: str | None) -> str:
-    """`Location` из редиректаNext отдаёт относительным (`/rs`) — приводим к URL."""
-    if not target:
-        return ""
-    return urljoin(base, target)
+def page_robots_directives(headers, html: str) -> frozenset[str]:
+    """Директивы закрытия страницы из обоих механизмов сразу.
 
-
-def to_origin(url: str | None, origin: str) -> str:
-    """Тот же адрес, но на другом origin.
-
-    Нужно, чтобы проверить живость ссылки, которую продукт отдаёт на публичном
-    домене: canonical/hreflang всегда `https://tamir.rs/...`, а трогать прод
-    запретно (`require_allowed_target`), поэтому адрес переносится на стенд.
+    Стенд закрывает страницы и заголовком `X-Robots-Tag`, и тегом
+    `<meta name="robots">`. Тесту важно, чтобы страница была закрыта хоть
+    чем-то, поэтому директивы объединяются; откуда именно — видно по
+    значению заголовка в сообщении теста.
     """
+    found = parse_robots_directives(headers.get("x-robots-tag"))
+    for tag in _META_TAGS_RE.findall(html or ""):
+        attrs = {}
+        for match in _ATTR_RE.finditer(tag):
+            attrs[match.group(1).lower()] = match.group(3) if match.group(3) is not None else match.group(4)
+        if attrs.get("name", "").lower() in _ROBOTS_NAMES:
+            found |= parse_robots_directives(attrs.get("content"))
+    return found
+
+
+def host_of(url: str | None) -> str:
+    """Хост адреса из `Sitemap:` (без порта) — чтобы отличить стенд от прода."""
     if not url:
         return ""
-    parts = urlsplit(url)
-    base = urlsplit(origin)
-    rebuilt = parts._replace(scheme=base.scheme, netloc=base.netloc)
-    return urlunsplit(rebuilt)
-
-
-def same_url(left: str | None, right: str | None) -> bool:
-    """Сравнение URL «как страницы» (слэш в конце не значим)."""
-    return normalize_url(left) == normalize_url(right)
-
-
-def hosts_of(urls: Iterable[str]) -> set[str]:
-    """Хосты списка URL — чтобы проверить одно происхождение ссылок."""
-    return {urlsplit(url).netloc.lower() for url in urls if url}
-
-
-def path_of(url: str) -> str:
-    """Путь URL (для проверок вида «каталог без параметров в списке»)."""
-    return urlsplit(url).path
+    target = url if "://" in url else f"//{url}"
+    return urlsplit(target).netloc.lower().split(":")[0]

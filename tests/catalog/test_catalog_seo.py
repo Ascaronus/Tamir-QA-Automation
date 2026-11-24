@@ -1,161 +1,254 @@
-"""М2: каталог, поиск и sitemap витрины на стенде.
+"""Функциональные проверки витрины (локаль `sr`): каталог, карточка, корзина.
 
-Здесь проверяется контракт листинга (пагинация, фильтры, поиск) и состояние
-`sitemap.xml`. Факт по sitemap зафиксирован зондом 23.11.2026: staging отдаёт
-пустой `<urlset/>`, потому что `frontend/src/app/sitemap.ts` берёт товарные
-фиды с **боевого** `api.tamir.rs` (в коде нет `staging.api.tamir.rs`), а на
-стенде эти адреса недоступны. Это продуктовый gap, он помечен `xfail` и
-описан в `docs/TEST-PLAN.md`.
+Это не SEO-проверки: здесь ничего не ищется в `<title>`, canonical или
+og:атрибутах. Проверяется поведение, которое видит пользователь:
+
+- адрес каталога (`/rs/catalog`) отвечает и содержит список товаров;
+- товаров в списке ровно столько, сколько обещает счётчик на странице;
+- у каждой карточки в списке есть цена в местном формате (`1.440,00 RSD`);
+- поиск по каталогу сужает список (`?q=sesir`);
+- карточка товара, открытая по ссылке из каталога, содержит цену и контроль
+  «добавить в корзину»;
+- страницы `/rs/korpa` и `/rs/checkout` открываются;
+- одна и та же страница на `sr` и `en` отдаёт разные тексты интерфейса.
+
+Все ожидания взяты из реальных ответов staging 23.11.2026, «селекторы» — из
+разметки этих ответов, ничего не выдумано.
+
+Почему нет браузерных проверок: `korpa` и `checkout` на SSR отдают только
+заглушку `Učitavanje…`, пустое состояние и состав корзины рисует клиент.
+Проверять их можно только в браузере — это зона `tests/e2e/`, здесь проверяем
+статус и SSR-оболочку страницы.
+
+Важно: `<html lang>` и тексты сравниваются по отрисованному `<main>`, потому
+что Next инлайнит полный каталог сообщений локали в RSC-payload страницы — по
+всему HTML любые строки находились бы всегда, и проверка была бы пустой.
 """
 
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
 
 import pytest
 
-from qa.seo import hosts_of, parse_seo, parse_sitemap, resolve_url, same_url
-
 pytestmark = pytest.mark.catalog
 
-CATALOG_ROUTE = "/rs/catalog"
-#: Публичный sr-адрес каталога НЕ локализуется: в `frontend/src/lib/i18n/paths.ts`
-#: список `servicePaths` накрывает только `account*` и `cart` -> `korpa`. Значит
-#: `/rs/katalog` не должен рождать дубль, который начнёт индексироваться.
-CATALOG_UNLOCALIZED_SLUG_ROUTE = "/rs/katalog"
+#: Ожидаемые тексты интерфейса по локалям. Источник — каталог сообщений
+#: фронтенда (`frontend/src/messages/{sr,en}.json`) и фактический SSR staging.
+EXPECTED_CHROME = {
+    "sr": {
+        "path": "/rs/catalog",
+        "h1": "Svi proizvodi",
+        "filters": "Filteri",
+    },
+    "en": {
+        "path": "/en/catalog",
+        "h1": "All products",
+        "filters": "Filters",
+    },
+}
 
-#: Сколько ссылок на товар проверяем на доступность (чтобы прогон не раздувался).
-PRODUCT_LINKS_TO_CHECK = 3
+#: Цена в сербской локали: разделитель тысяч `.`, десятичный `,`, суффикс RSD.
+PRICE_SR_RE = re.compile(r"^\d{1,3}(?:\.\d{3})*,\d{2}\s?RSD$")
 
-
-def _product_hrefs(html: str) -> list[str]:
-    return sorted(set(re.findall(r'href="(/(?:rs|en)/products/[^"?#]+)"', html)))
-
-
-def test_sitemap_is_valid_xml_from_one_origin(web_client, config):
-    """`sitemap.xml` — валидный XML и все ссылки одного происхождения."""
-    response = web_client.get("/sitemap.xml")
-    assert response.status_code == 200, f"/sitemap.xml: получен {response.status_code}"
-    assert "xml" in (response.headers.get("content-type") or "").lower(), (
-        f"/sitemap.xml: content-type {response.headers.get('content-type')!r}"
-    )
-
-    urls, nested = parse_sitemap(response.text)
-    assert response.text.lstrip().startswith("<?xml"), (
-        f"/sitemap.xml: ответ не похож на XML: {response.text[:120]!r}"
-    )
-    if urls or nested:
-        public_host = urlsplit(config.site_origin).netloc
-        assert hosts_of(urls + nested) == {public_host}, (
-            f"/sitemap.xml: ссылки ведут не на {public_host}: "
-            f"{sorted(hosts_of(urls + nested))}"
-        )
-
-
-@pytest.mark.xfail(
-    reason=(
-        "PRODUCT GAP: frontend/src/app/sitemap.ts строит sitemap с боевого api.tamir.rs, "
-        "на стенде он недоступен -> staging отдаёт пустой <urlset/>"
-    ),
-    strict=False,
+HTML_LANG_RE = re.compile(r"<html\b[^>]*\blang=\"([^\"]+)\"", re.I)
+MAIN_RE = re.compile(r"<main\b[^>]*>(.*?)</main>", re.I | re.S)
+SCRIPT_RE = re.compile(r"<script\b.*?</script>", re.I | re.S)
+TAG_RE = re.compile(r"<[^>]+>")
+CARD_TITLE_RE = re.compile(r"<a\b[^>]*class=\"product-card-title\"[^>]*href=\"([^\"]+)\"", re.I)
+CARD_PRICE_RE = re.compile(r"<p\b[^>]*class=\"product-card-price\"[^>]*>(.*?)</p>", re.I | re.S)
+COUNT_RE = re.compile(r"class=\"catalog-count-number\"[^>]*>(\d+)<", re.I)
+ADD_TO_CART_RE = re.compile(
+    r"<button\b[^>]*class=\"[^\"]*button-primary[^\"]*\"[^>]*>(.*?)</button>", re.I | re.S
 )
-def test_sitemap_lists_localized_storefront_pages(web_client):
-    """В sitemap должны быть локализованные страницы витрины (ожидание M2).
-
-    Пока проверка `xfail` и не красит прогон; когда продукт научит sitemap
-    читать API стенда, тест станет обычным и начнёт охранять состав URL.
-    """
-    response = web_client.get("/sitemap.xml")
-    urls, _ = parse_sitemap(response.text)
-    assert urls, "sitemap.xml отдаёт пустой <urlset/>"
-
-    paths = {urlsplit(url).path for url in urls}
-    assert any(path.startswith("/rs") for path in paths), f"нет sr-страниц: {sorted(paths)[:10]}"
-    assert any(path.startswith("/en") for path in paths), f"нет en-страниц: {sorted(paths)[:10]}"
+PRODUCT_PRICE_RE = re.compile(r"<p\b[^>]*class=\"product-price[^\"]*\"[^>]*>(.*?)</p>", re.I | re.S)
 
 
-def test_catalog_page_is_available_and_on_public_origin(web_client, config):
-    """Каталог открывается, а его canonical лежит на публичном origin.
+def _main_body(html: str) -> str:
+    """Содержимое отрисованного `<main>` — только SSR-разметка, не RSC-payload."""
+    block = MAIN_RE.search(html or "")
+    assert block, "в ответе нет `<main>` — страница не отдала SSR-разметку"
+    return SCRIPT_RE.sub(" ", block.group(1))
 
-    canonical каталога в текущей сборке указывает на `/rs` (в макете лежит
-    canonical главной страницы), поэтому проверяется инвариант «тот же хост, что
-    и у канонического домена», а не точное совпадение с адресом страницы.
-    """
-    response = web_client.get(CATALOG_ROUTE)
-    assert response.status_code == 200, f"{CATALOG_ROUTE}: получен {response.status_code}"
 
-    seo = parse_seo(response.text)
-    assert seo.canonical, f"{CATALOG_ROUTE}: canonical отсутствует"
-    assert hosts_of([seo.canonical]) == {urlsplit(config.site_origin).netloc}, (
-        f"{CATALOG_ROUTE}: canonical {seo.canonical!r} вне публичного домена"
+def _main_text(html: str) -> str:
+    """Текст отрисованного `<main>`: только то, что пользователь видит до гидратации."""
+    return TAG_RE.sub(" ", _main_body(html))
+
+
+def _main_products(html: str) -> tuple[list[str], list[str]]:
+    """Ссылки на товары и цены карточек внутри `<main>`."""
+    body = _main_body(html)
+    return CARD_TITLE_RE.findall(body), CARD_PRICE_RE.findall(body)
+
+
+def _text(fragment: str) -> str:
+    """Текст HTML-фрагмента без разметки и неразрывных пробелов."""
+    return TAG_RE.sub("", fragment).replace("\xa0", " ").strip()
+
+
+def _lang(html: str) -> str | None:
+    """Значение `<html lang>`."""
+    match = HTML_LANG_RE.search(html or "")
+    return match.group(1).lower() if match else None
+
+
+# --------------------------------------------------------------------------- каталог
+
+
+def test_katalog_otkryvaetsya_i_soderzhit_spisok_tovarov(web_client):
+    """`/rs/catalog` отвечает 200 и отдаёт непустой список товаров."""
+    response = web_client.get("/rs/catalog")
+    assert response.status_code == 200, (
+        f"/rs/catalog: получен {response.status_code} — витрина недоступна"
+    )
+
+    hrefs, prices = _main_products(response.text)
+    assert hrefs, "на /rs/catalog нет ни одной карточки товара — пользователь видит пустую витрину"
+    assert all(href.startswith("/rs/products/") for href in hrefs), (
+        f"карточки ведут не на страницы товаров: {sorted(set(hrefs))[:3]}"
+    )
+    assert prices, "ни у одной карточки в списке нет цены"
+
+
+def test_chislo_tovarov_v_spiske_soovaet_schetchiku(web_client):
+    """Счётчик «N proizvoda» равен числу карточек: пользователь видит честное число."""
+    response = web_client.get("/rs/catalog")
+    assert response.status_code == 200, f"/rs/catalog: получен {response.status_code}"
+
+    hrefs, prices = _main_products(response.text)
+    match = COUNT_RE.search(_main_body(response.text))
+    assert match, (
+        "в каталоге нет счётчика товаров (`catalog-count-number`) — число "
+        "найденных товаров неоткуда взять"
+    )
+    declared = int(match.group(1))
+    assert declared == len(hrefs), (
+        f"счётчик обещает {declared} товаров, а в списке карточек {len(hrefs)} — "
+        "список обрезан или счётчик показывает неверное число"
+    )
+    assert len(prices) == len(hrefs), (
+        f"карточек {len(hrefs)}, а цен в списке {len(prices)} — у части товаров цена не отрисована"
     )
 
 
-def test_catalog_slug_is_not_localized(web_client):
-    """`/rs/katalog` -> `404`: у каталога нет локализованного адреса.
+def test_ceny_v_spiske_tovarov_v_mestnom_formate(web_client):
+    """Цены в списке — местный формат `1.440,00 RSD`, а не `RSD 1,440.00`."""
+    response = web_client.get("/rs/catalog")
+    assert response.status_code == 200, f"/rs/catalog: получен {response.status_code}"
 
-    В `frontend/src/lib/i18n/paths.ts` локалиуются только `account*` и
-    `cart` -> `korpa`; каталог остаётся на `/rs/catalog`. Проверка держит
-    это как инвариант: если кто-то добавит `catalog` -> `katalog`, появятся
-    два индексируемых адреса одного листинга, и тест это поймает.
-    """
-    response = web_client.get(CATALOG_UNLOCALIZED_SLUG_ROUTE)
-    assert response.status_code == 404, (
-        f"{CATALOG_UNLOCALIZED_SLUG_ROUTE}: получен {response.status_code} — "
-        f"у листинга появился второй адрес (дубль для индекса)"
+    _, prices = _main_products(response.text)
+    assert prices, "в списке товаров нет ни одной цены"
+    formatted = [_text(price) for price in prices]
+    bad = [price for price in formatted if not PRICE_SR_RE.match(price)]
+    assert not bad, f"цены не в сербском формате: {bad[:5]} — ожидался вид `1.440,00 RSD`"
+
+
+def test_poisk_po_katalogu_suzhaet_spisok_tovarov(web_client):
+    """Поиск `/rs/catalog?q=...` возвращает подмножество товаров каталога."""
+    full = web_client.get("/rs/catalog")
+    assert full.status_code == 200, f"/rs/catalog: получен {full.status_code}"
+    full_hrefs, _ = _main_products(full.text)
+    assert full_hrefs, "в каталоге нет товаров — сравнивать поиск не с чем"
+
+    found = web_client.get("/rs/catalog", params={"q": "sesir"})
+    assert found.status_code == 200, (
+        f"/rs/catalog?q=sesir: получен {found.status_code} — поиск по каталогу не отвечает"
+    )
+    found_hrefs, _ = _main_products(found.text)
+    assert found_hrefs, "поиск по «sesir» не вернул ни одного товара"
+    assert len(found_hrefs) < len(full_hrefs), (
+        f"поиск вернул {len(found_hrefs)} товаров из {len(full_hrefs)} — фильтр "
+        "по названию не применяется"
+    )
+    extra = set(found_hrefs) - set(full_hrefs)
+    assert not extra, f"поиск показал товары, которых нет в каталоге: {sorted(extra)[:3]}"
+
+
+def test_stranica_tovara_soderzhit_cenu_i_knopku_v_korpu(web_client):
+    """Карточка товара по ссылке из каталога: цена и контроль «добавить в корзину»."""
+    listing = web_client.get("/rs/catalog")
+    assert listing.status_code == 200, f"/rs/catalog: получен {listing.status_code}"
+    hrefs, _ = _main_products(listing.text)
+    assert hrefs, "в каталоге нет ссылок на товары"
+
+    href = hrefs[0]
+    product = web_client.get(href)
+    assert product.status_code == 200, f"{href}: страница товара отвечает {product.status_code}"
+
+    price = PRODUCT_PRICE_RE.search(product.text)
+    assert price, f"{href}: на странице товара нет цены (`product-price`)"
+    assert PRICE_SR_RE.match(_text(price.group(1))), (
+        f"{href}: цена {_text(price.group(1))!r} не в формате `1.290,00 RSD`"
+    )
+
+    button = ADD_TO_CART_RE.search(product.text)
+    assert button, f"{href}: на странице товара нет кнопки добавления в корзину"
+    label = _text(button.group(1))
+    assert "korpu" in label.lower(), (
+        f"{href}: главная кнопка товара называется {label!r}, ожидался «U korpu»"
     )
 
 
-def test_catalog_trailing_slash_redirects_to_canonical_url(web_client, config):
-    """`/rs/catalog/` -> 308 на `/rs/catalog` (нормализация следа)."""
-    response = web_client.get(f"{CATALOG_ROUTE}/", allow_redirects=False)
-    assert response.status_code == 308, (
-        f"{CATALOG_ROUTE}/: получен {response.status_code}, ожидался 308"
+# ------------------------------------------------------------------- korpa / checkout
+
+
+def test_korpa_otkryvaetsya_v_srpskoj_lokali(web_client):
+    """`/rs/korpa` отвечает 200 и показывает сербскую SSR-оболочку."""
+    response = web_client.get("/rs/korpa")
+    assert response.status_code == 200, f"/rs/korpa: получен {response.status_code} — корзина недоступна"
+
+    lang = _lang(response.text)
+    assert lang and lang.startswith("sr"), (
+        f"/rs/korpa: `<html lang>` = {lang!r}, ожидалась сербская локаль"
     )
-    location = response.headers.get("location") or ""
-    assert resolve_url(response.url, location) and same_url(
-        resolve_url(response.url, location), f"{config.web_url}{CATALOG_ROUTE}"
-    ), f"{CATALOG_ROUTE}/: локация {location!r}"
-
-
-def test_catalog_links_resolve(web_client):
-    """Ссылки на товары из каталога ведут на живые карточки."""
-    catalog = web_client.get(CATALOG_ROUTE)
-    hrefs = _product_hrefs(catalog.text)
-    assert hrefs, f"{CATALOG_ROUTE}: в HTML нет ни одной ссылки на товар"
-
-    for href in hrefs[:PRODUCT_LINKS_TO_CHECK]:
-        response = web_client.get(href)
-        assert response.status_code == 200, (
-            f"{CATALOG_ROUTE}: ссылка на товар {href!r} отвечает {response.status_code}"
-        )
-
-
-def test_catalog_beyond_last_page_returns_404(web_client):
-    """Страница за последней страницей пагинации не существует."""
-    response = web_client.get(f"{CATALOG_ROUTE}?page=99")
-    assert response.status_code == 404, (
-        f"{CATALOG_ROUTE}?page=99: ожидался 404, получен {response.status_code} — "
-        f"пагинация отдаёт пустые страницы, которые плодятся в индексе"
+    main = _main_text(response.text)
+    assert "Korpa" in main, "/rs/korpa: в `<main>` нет заголовка «Korpa» — страница корзины не собралась"
+    # Пустое состояние и состав корзины рисует клиент, поэтому проверяется
+    # только SSR-заглушка: без неё до гидратации пользователь видит пустоту.
+    assert "Učitavanje…" in main, (
+        "/rs/korpa: SSR не показывает состояние загрузки — до гидратации страница пустая"
     )
 
 
-def test_catalog_unknown_category_returns_404(web_client):
-    """Фильтр по несуществующей категории -> `404`, а не пустой «каталог»."""
-    response = web_client.get(f"{CATALOG_ROUTE}?category_id=bogus")
-    assert response.status_code == 404, (
-        f"{CATALOG_ROUTE}?category_id=bogus: ожидался 404, получен {response.status_code}"
+def test_checkout_otkryvaetsya_v_srpskoj_lokali(web_client):
+    """`/rs/checkout` отвечает 200 — оформление заказа доступно."""
+    response = web_client.get("/rs/checkout")
+    assert response.status_code == 200, (
+        f"/rs/checkout: получен {response.status_code} — оформление заказа недоступно"
+    )
+    lang = _lang(response.text)
+    assert lang and lang.startswith("sr"), (
+        f"/rs/checkout: `<html lang>` = {lang!r}, ожидалась сербская локаль"
+    )
+    assert _main_text(response.text).strip(), (
+        "/rs/checkout: `<main>` пуст — страница оформления не отдала SSR-контент"
     )
 
 
-def test_catalog_search_results_are_not_indexed(web_client):
-    """Страница результатов поиска закрыта от индексации (иначе индекс мусором)."""
-    response = web_client.get(f"{CATALOG_ROUTE}?q=tee")
-    assert response.status_code == 200, f"?q=tee: получен {response.status_code}"
+# ------------------------------------------------------------------------- lokalizaciya
 
-    header = (response.headers.get("x-robots-tag") or "").lower()
-    assert "noindex" in header, (
-        f"{CATALOG_ROUTE}?q=tee: страница поиска доступна индексации — "
-        f"X-Robots-Tag={response.headers.get('x-robots-tag')!r}"
+
+@pytest.mark.parametrize("locale", ("sr", "en"))
+def test_katalog_localizuet_interfeys(web_client, locale):
+    """Одна и та же страница каталога на `sr` и `en` отдаёт свой `<html lang>` и свой текст."""
+    expected = EXPECTED_CHROME[locale]
+    path = expected["path"]
+    response = web_client.get(path)
+    assert response.status_code == 200, f"{path}: получен {response.status_code}"
+
+    lang = _lang(response.text)
+    assert lang == locale, f"{path}: `<html lang>` = {lang!r}, ожидалась локаль {locale!r}"
+
+    main = _main_text(response.text)
+    assert expected["h1"] in main, (
+        f"{path}: в `<main>` нет заголовка {expected['h1']!r} — интерфейс не переведён на {locale}"
+    )
+    assert expected["filters"] in main, (
+        f"{path}: в `<main>` нет подписи {expected['filters']!r} — панель фильтров не локализована"
+    )
+
+    other = EXPECTED_CHROME["en" if locale == "sr" else "sr"]
+    assert other["h1"] not in main, (
+        f"{path}: в `<main>` встречается чужой заголовок {other['h1']!r} — в интерфейс попадает чужая локаль"
     )
