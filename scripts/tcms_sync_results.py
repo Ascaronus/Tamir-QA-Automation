@@ -12,10 +12,12 @@
 Ссылка на Allure-отчёт добавляется через ``TestExecution.add_link``, чтобы из
 карточки исполнения было видно лог и скриншоты.
 
-Заодно прогон обновляет текст кейсов (``case_text``): шаги, которые тест описал
+Заодно прогон обновляет текст кейсов (поле ``text``): шаги, которые тест описал
 фикстурой ``steps``, лежат в ``.tmp/steps.json``, и именно они показываются в
-карточке кейса как «действие → ожидание».  Запасной текст отсюда не пишется —
-подтвердить его нечем, поэтому без настоящих шагов кейс остаётся как есть.
+карточке кейса как таблица «Действие → Ожидание».  Запасной текст отсюда не
+пишется — подтвердить его нечем, поэтому без настоящих шагов кейс остаётся как
+есть.  Исполнениям возвращаем ``case_text_version = "latest"``, иначе Kiwi
+показывает ту версию текста, что была на момент создания исполнения.
 
 Запуск (локально или в CI):
 
@@ -95,6 +97,24 @@ def script_of(result: dict[str, Any]) -> str:
     return f"{package.replace('.', '/')}.py::{name}"
 
 
+def latest_text_version(client: TcmsClient, case_id: int) -> int:
+    """Id последней версии текста кейса — на него ссылается новое исполнение.
+
+    В Kiwi TCMS 17 историей текста правит ``simple_history``: ``case_text_version``
+    это ``history_id`` строки ``HistoricalTestCase``, а не счётчик внутри кейса.
+    ``TestExecution.update`` понимает слово ``latest``, но ``create`` — нет, поэтому
+    для нового исполнения номер спрашиваем отдельно.  Если история не читается,
+    возвращаем 1: исполнение с устаревшим текстом лучше, чем несозданное.
+    """
+    try:
+        history = client.call("TestCase.history", case_id) or []
+    except TcmsError as exc:
+        print(f"  ! не удалось прочитать историю TestCase {case_id}: {exc}", file=sys.stderr)
+        return 1
+    versions = [row.get("history_id") for row in history if row.get("history_id")]
+    return max(versions) if versions else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="pytest -> Kiwi TCMS")
     parser.add_argument("--results", default=".tmp/allure-results")
@@ -172,21 +192,18 @@ def main() -> int:
             unmapped += 1
             continue
 
-        # Текст кейса обновляем до исполнения: у нового исполнения case_text_version
-        # должен ссылаться на тот текст, против которого тест шёл.  Пишем только
-        # настоящие шаги прогона — запасной текст тут не подтверждён ничем.
+        # Текст кейса обновляем до исполнения: исполнение показывает тот текст,
+        # против которого тест шёл.  Пишем только настоящие шаги прогона — запасной
+        # текст тут не подтверждён ничем.  Поле называется `text`: поля `case_text`
+        # у JSON-RPC нет, а ответ `filter` отдаёт текущий текст в том же `text`,
+        # поэтому сверяемся по нему.
         steps_text = case_text_from_steps(recorded.get(script, []))
-        if steps_text and steps_text != (case.get("case_text") or ""):
+        if steps_text and steps_text != (case.get("text") or ""):
             texts += 1
             if args.dry_run:
-                print(f"  case_text: TestCase {case['id']} <- {len(steps_text.splitlines())} шагов прогона")
+                print(f"  text: TestCase {case['id']} <- {len(steps_text.splitlines())} строк шагов прогона")
             else:
-                refreshed = client.update("TestCase", int(case["id"]), {"case_text": steps_text})
-                # TCMS отдаёт обновлённый кейс целиком — берём из него case_version,
-                # чтобы новое исполнение ссылалось на свежий текст.  Если ответ
-                # пустой, оставляем прежний кейс: статус важнее версии текста.
-                if isinstance(refreshed, dict):
-                    case = refreshed
+                client.update("TestCase", int(case["id"]), {"text": steps_text})
 
         status_name = STATUS_BY_ALLURE.get(result.get("status"), "IDLE")
         values = {"status": status_pk[status_name], "build": build["id"]}
@@ -198,10 +215,15 @@ def main() -> int:
             continue
 
         if execution:
+            # "latest" — штатное значение Kiwi: сервер сам подставит id последней
+            # версии текста, и исполнение начнёт показывать свежие шаги.
+            values["case_text_version"] = "latest"
             execution_id = client.update("TestExecution", execution["id"], values)["id"]
             updated += 1
         else:
-            values["case_text_version"] = case.get("case_version") or 1
+            # Для нового исполнения номер версии текста обязателен (это IntegerField),
+            # и "latest" здесь не разбирается — берём последнюю версию сами.
+            values["case_text_version"] = latest_text_version(client, int(case["id"]))
             execution_id = client.create("TestExecution", {"run": run["id"], "case": case["id"], **values})["id"]
             created += 1
 

@@ -5,8 +5,7 @@
 tests/conftest.py) — и попадает в два места:
 
 * в Allure как шаг теста (его видно в отчёте ``https://qa.tamir.rs/<n>/``);
-* в Kiwi TCMS как текст тест-кейса (``action;expected`` — формат, который TCMS
-  показывает как таблицу «действие → ожидание»).
+* в Kiwi TCMS как текст тест-кейса — Markdown-таблица «Действие → Ожидание».
 
 Чтобы seeder видел шаги, тест должен быть выполнен: pytest складывает записанные
 шаги в ``.tmp/steps.json`` (см. ``pytest_sessionfinish`` в tests/conftest.py), a
@@ -36,19 +35,43 @@ def steps_for(nodeid: str) -> list[tuple[str, str]]:
     return RECORDED.get(nodeid, [])
 
 
+#: Заголовок таблицы шагов.  Kiwi TCMS 17 рендерит текст кейса как Markdown
+#: (фильтр ``markdown2html``, расширение ``tables``), поэтому шаги уходят таблицей,
+#: а не строками из вывода pytest.
+STEP_TABLE_HEADER = "| # | Действие | Ожидание |"
+
+#: Разделитель колонок Markdown-таблицы.
+STEP_TABLE_RULE = "| --- | --- | --- |"
+
+
+def _md_cell(value: str) -> str:
+    """Ячейка Markdown-таблицы: одна строка, без незаэкранированных ``|``."""
+    text = " ".join((value or "").split()).replace("|", r"\|")
+    return text or "—"
+
+
 def format_steps(steps: Iterable[tuple[str, str]]) -> str:
-    """Одна строка на шаг: ``действие;ожидание`` (пустое ожидание — само действие)."""
-    lines: list[str] = []
-    for action, expected in steps:
-        lines.append(f"{action};{expected}" if expected else action)
-    return "\n".join(lines)
+    """Текст тест-кейса: Markdown-таблица «Действие → Ожидание», строка на шаг.
+
+    Пустая строка возвращается, если шагов нет: у вызывающего кода тогда свой
+    запасной вариант (докстринг), а не пустой кейс.
+    """
+    rows = [
+        f"| {nomer} | {_md_cell(deystvie)} | {_md_cell(ozhidanie)} |"
+        for nomer, (deystvie, ozhidanie) in enumerate(steps, start=1)
+    ]
+    if not rows:
+        return ""
+    return "\n".join([STEP_TABLE_HEADER, STEP_TABLE_RULE, *rows])
 
 
 def as_case_text(nodeid: str, path: str | os.PathLike[str] | None = None) -> str:
-    """Текст тест-кейса для поля ``case_text`` Kiwi TCMS.
+    """Текст тест-кейса для поля ``text`` Kiwi TCMS.
 
-    TCMS разбирает строки вида ``действие;ожидание`` как шаги автоматизированного
-    кейса, поэтому в каталоге это выглядит как инструкция, а не как nodeid.
+    В Kiwi TCMS 17 у тест-кейса один текст — поле ``text`` (живёт в ``TestCaseText``
+    и показывается как «Описание»); отдельного поля ``case_text`` JSON-RPC не
+    принимает, поэтому писать нужно сюда.  Markdown-таблица даёт инструкцию,
+    а не строку из вывода pytest.
 
     Шаги берутся из реестра этого процесса.  Если их здесь нет — а скрипты каталога
     ``scripts/tcms_seed.py`` и ``scripts/tcms_sync_results.py`` запускаются отдельной

@@ -100,8 +100,8 @@ TCMS берутся из него, а не придумываются вручн
 не идемпотентен, и без этого ключа ночной прогон приносил бы по копии на каждый
 кейс.
 
-Поля кейса: `summary` (первая строка docstring, иначе имя теста), `text`
-(docstring целиком, иначе nodeid), `case_text` (шаги, см. ниже), `is_automated
+Поля кейса: `summary` (первая строка docstring, иначе имя теста), `text` (шаги
+прогона, см. ниже; иначе docstring целиком, иначе nodeid), `is_automated
 = True`, категория, приоритет, `case_status`, продукт, автор.
 
 ### Текст кейса: шаги прогона, а не догадки
@@ -117,9 +117,15 @@ recorded = load_recorded_steps(args.steps_file)
 text = case_text_from_steps(recorded.get(nodeid, []))   # "" если шагов нет
 ```
 
-В `case_text` попадает формат Kiwi TCMS «одна строка = один шаг»,
-`действие;ожидание`. Так кейс читается как инструкция, а не как строка из вывода
-pytest, и тот же самый набор шагов виден в Allure (`allure.step`).
+В `text` попадает Markdown-таблица «Действие → Ожидание»: Kiwi TCMS рендерит
+текст кейса из Markdown (`markdown2html` с расширениями `tables`, `nl2br`,
+`fenced_code`), поэтому таблица — единственный формат, в котором шаги читаются
+как инструкция, а не как пересказ. Прежний формат `действие;ожидание` одной
+строкой превращался в кашу. Вертикальную черту внутри шага `qa/steps.py`
+экранирует, чтобы не рвать таблицу.
+
+Тот же самый набор шагов виден в Allure (`allure.step`) — один источник, два
+адресата.
 
 Запасной вариант (`fallback_text`) есть только у сидинга: сначала первая строка
 docstring, потом имя теста — кейса без текста в каталоге быть не должно. Перенос
@@ -268,9 +274,23 @@ Kiwi TCMS 17.2 не публикует реестр моделей: `TestBuild.l
 
 `TestCase.update` **не может** изменить `case_type`: метод описан через
 `UpdateTestCase`, в котором полей `case_type`, `is_confirmed` и `is_automated`
-нет. Меняются `summary`, `text`, `case_text`, `script`, `is_automated`,
+нет. Меняются `summary`, `text`, `script`, `is_automated`,
 `category`, `priority`, `case_status`, `product` — этого хватает, чтобы
 обновлять кейсы по nodeid.
+
+Отдельная ловушка с текстом: поля `case_text` у JSON-RPC-модели `TestCase` **не
+существует**. Seeder писал шаги именно туда, а `JSONSerializer` незнакомое поле
+просто выбрасывал — ни ошибки, ни ответа, и в каталоге годами оставался
+пересказ docstring. Пишется поле `text`. Имя поля держит под тестом
+`test_case_payload_pishet_text_a_ne_case_text`.
+
+Текст кейса версионирован (`simple_history`): каждая запись в `TestCase`
+создаёт версию, а `TestExecution` хранит `case_text_version` — номер версии на
+момент создания исполнения, из-за чего карточка прогона показывает старый текст.
+Лечится так: `TestExecution.update` принимает `case_text_version: "latest"` (сам
+Kiwi берёт `case.history.latest().history_id`), а `TestExecution.create` слова
+`latest` не понимает и требует число — его берёт `latest_text_version()` из
+`TestCase.history` (строки идут от новой к старой, номер — в `history_id`).
 
 ### `id` в JSON-RPC обязателен
 

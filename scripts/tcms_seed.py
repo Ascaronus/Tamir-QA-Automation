@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """Заводит каталог Kiwi TCMS по автотестам репозитория.
 
-Каталог строится из самого pytest: collect по маркерам `smoke`/`api` даёт список
-кейсов, поэтому в TCMS не появляется ничего, чего нет в коде. Ключем связи
+Каталог строится из самого pytest: collect по маркерам из `AREAS` (`e2e`,
+`scenario`, `smoke`, `api`, `seo`, `catalog`) даёт список кейсов, поэтому в TCMS не
+появляется ничего, чего нет в коде. Ключем связи
 служит `script` = pytest nodeid (например
 `tests/smoke/test_storefront_health.py::test_robots_txt_is_available`) — по нему
 кейсы находятся при повторном запуске.
 
 Скрипт идемпотентен: справочники и продукт ищутся по имени, кейсы — по `script`,
-существующие кейсы обновляются (summary/text/case_text/script/приоритет), план и
-тест-ран дополняются новыми кейсами. Повторный запуск не создаёт дублей.
+существующие кейсы обновляются (summary/text/script/приоритет — только изменившиеся
+поля), план и тест-ран дополняются новыми кейсами. Повторный запуск не создаёт
+дублей и не плодит версии истории текста.
 
-Текст кейса (`case_text`, «действие;ожидание» на шаг) берётся из шагов, которые
-прогон оставил в `.tmp/steps.json` (его пишет `pytest_sessionfinish`, см.
-`tests/conftest.py` и `qa/steps.py`). Порядок такой: сначала прогон, потом сидинг —
-и в каталоге оказываются настоящие шаги сценария, а не пересказ докстринга. Если
-шагов этого теста в файле нет, seeder откатывается на первую строку докстринга, а
-без докстринга — на имя теста: кейса без текста в каталоге быть не должно.
+Текст кейса (поле `text`) берётся из шагов, которые прогон оставил в
+`.tmp/steps.json` (его пишет `pytest_sessionfinish`, см. `tests/conftest.py` и
+`qa/steps.py`): это Markdown-таблица « Действие | Ожидание », и карточка кейса в
+Kiwi рендерит её как таблицу. Порядок такой: сначала прогон, потом сидинг — и в
+каталоге оказываются настоящие шаги сценария, а не пересказ докстринга. Если шагов
+этого теста в файле нет, seeder откатывается на первую строку докстринга, а без
+докстринга — на имя теста: кейса без текста в каталоге быть не должно.
 
 Запуск (учётка бота берётся из `TCMS_URL`/`TCMS_USER`/`TCMS_PASSWORD`):
 
@@ -163,6 +166,38 @@ def reference_id(client: TcmsClient, model: str, field: str, name: str) -> int:
     return int(rows[0]["id"])
 
 
+def case_payload(
+    case: dict[str, str],
+    *,
+    case_text: str,
+    category_id: int,
+    priority_id: int,
+    status_id: int,
+    product_id: int,
+    author_id: int,
+) -> dict[str, Any]:
+    """Поля кейса для `TestCase.create` / `TestCase.update`.
+
+    Текст кейса — поле `text`: в Kiwi TCMS 17 это обычное поле модели `TestCase`
+    (история правок — `TestCase.history`), и именно оно показывается на карточке
+    как «Описание», отрендеренное из Markdown.  Отдельного поля `case_text` у
+    JSON-RPC нет: сериализатор его молча выбрасывает, и шаги до TCMS не доезжают
+    (проверено на живом стенде: `text` создаёт новую версию истории, `case_text`
+    — нет).  Поэтому имя поля здесь защищено юнит-тестом.
+    """
+    return {
+        "summary": case["summary"][:255],
+        "text": case_text or case["doc"] or case["nodeid"],
+        "script": case["nodeid"],
+        "is_automated": True,
+        "category": category_id,
+        "priority": priority_id,
+        "case_status": status_id,
+        "product": product_id,
+        "author": author_id,
+    }
+
+
 def sync_case(
     client: TcmsClient,
     case: dict[str, str],
@@ -175,20 +210,15 @@ def sync_case(
     author_id: int,
 ) -> dict[str, Any]:
     """Создаёт или обновляет кейс; ключ — `script` (pytest nodeid)."""
-    values = {
-        "summary": case["summary"][:255],
-        "text": case["doc"] or case["nodeid"],
-        # case_text — шаги кейса «действие;ожидание»: так кейс читается как
-        # инструкция, а не как строка из вывода pytest
-        "case_text": case_text,
-        "script": case["nodeid"],
-        "is_automated": True,
-        "category": category_id,
-        "priority": priority_id,
-        "case_status": status_id,
-        "product": product_id,
-        "author": author_id,
-    }
+    values = case_payload(
+        case,
+        case_text=case_text,
+        category_id=category_id,
+        priority_id=priority_id,
+        status_id=status_id,
+        product_id=product_id,
+        author_id=author_id,
+    )
     found = client.rows("TestCase", {"script__exact": case["nodeid"]})
     if not found:
         created = client.create("TestCase", values)
@@ -196,8 +226,14 @@ def sync_case(
         return created
 
     existing = found[0]
-    updated = client.update("TestCase", int(existing["id"]), values)
-    print(f"  ~ TestCase {existing['id']}: {case['nodeid']}")
+    # Обновляем только изменившиеся поля: каждое сохранение кейса в Kiwi создаёт
+    # строку в истории, и полная запись на каждом прогоне раздувала бы историю
+    # текста без пользы.
+    changes = {k: v for k, v in values.items() if str(existing.get(k, "")) != str(v)}
+    if not changes:
+        return existing
+    updated = client.update("TestCase", int(existing["id"]), changes)
+    print(f"  ~ TestCase {existing['id']}: {case['nodeid']} ({', '.join(sorted(changes))})")
     return updated
 
 
@@ -300,7 +336,7 @@ def archive_other_plans(client: TcmsClient, *, keep_plan_id: int, keep_run_id: i
 
 
 def attach_case_texts(cases: list[dict[str, str]], steps_file: str | None) -> dict[str, int]:
-    """Заполняет `case_text` кейсов: шаги прогона, иначе докстринг, иначе имя теста.
+    """Готовит текст кейсов (`text` в TCMS): шаги прогона, иначе докстринг, иначе имя теста.
 
     Возвращает счётчик источников — по нему видно, сколько кейсов действительно
     описаны шагами, а сколько живут на запасном варианте.
