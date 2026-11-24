@@ -26,6 +26,8 @@ Kiwi TCMS 17 отдаёт RPC на `POST /json-rpc/` (есть и `/xml-rpc/`, �
 from __future__ import annotations
 
 import os
+import sys
+import time
 from typing import Any
 
 import requests
@@ -42,12 +44,24 @@ TIMEOUT_SECONDS = 30
 AUTH_REQUIRED_CODE = -32098
 METHOD_NOT_FOUND_CODE = -32601
 
+#: Методы, которые можно повторять после обрыва: они ничего не меняют.
+READ_SUFFIXES = (".filter", ".get")
+ATTEMPTS_FOR_READS = 3
+RETRY_BACKOFF_SECONDS = (1.0, 3.0)
+
+#: Так Cloudflare отдаёт оборванный tunnel до Kiwi (502/503/504).
+RETRYABLE_STATUS = (502, 503, 504)
+
 #: Что дёргает `ping()`: имена методов проверены на живом инстансе 17.2.
 COUNT_MODELS: tuple[str, ...] = ("Product", "Version", "Category", "TestCase", "TestRun", "Build")
 
 
 class TcmsUnavailable(AssertionError):
     """Нет учётки или TCMS недоступен — тест скипается, а не падает."""
+
+
+class TcmsGatewayError(TcmsUnavailable):
+    """TCMS за HTTP-фронтом (Cloudflare) оборвал соединение — случай временный."""
 
 
 class TcmsError(RuntimeError):
@@ -70,11 +84,17 @@ def read_credentials() -> tuple[str, str] | None:
 class TcmsClient:
     """Одна сессия к `POST /json-rpc/` с логином через `Auth.login`."""
 
-    def __init__(self, url: str, user: str, password: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        user: str,
+        password: str,
+        session: requests.Session | None = None,
+    ) -> None:
         self.url = require_allowed_target(url)
         self.user = user
         self.password = password
-        self._session = requests.Session()
+        self._session = session or requests.Session()
         self._request_id = 0
         self._logged_in = False
 
@@ -109,6 +129,23 @@ class TcmsClient:
         return token if isinstance(token, str) else ""
 
     def _request(self, method: str, *params: Any) -> Any:
+        attempts = ATTEMPTS_FOR_READS if method.endswith(READ_SUFFIXES) else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._round_trip(method, params)
+            except (TcmsUnavailable, TcmsGatewayError) as exc:
+                if attempt == attempts:
+                    raise
+                delay = RETRY_BACKOFF_SECONDS[attempt - 1]
+                print(
+                    f"  Kiwi TCMS {method!r}: {exc} — повтор {attempt + 1}/{attempts} "
+                    f"через {delay:.0f} c",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+        raise TcmsUnavailable(f"не удалось выполнить {method!r}")  # недостижимо
+
+    def _round_trip(self, method: str, params: tuple[Any, ...]) -> Any:
         self._request_id += 1
         payload = {
             "jsonrpc": "2.0",
@@ -125,6 +162,9 @@ class TcmsClient:
 
         if response.status_code == 204:
             raise TcmsError(f"Kiwi TCMS ответил 204 без тела на вызов {method!r}")
+        if response.status_code in RETRYABLE_STATUS:
+            # Cloudflare рвёт соединение с tunnel'ом раньше, чем отвечает Kiwi.
+            raise TcmsGatewayError(f"HTTP {response.status_code} при вызове {method!r}")
         if response.status_code >= 400:
             raise TcmsError(
                 f"HTTP {response.status_code} при вызове {method!r}: "
