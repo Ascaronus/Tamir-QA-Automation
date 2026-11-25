@@ -79,6 +79,9 @@ REGISTER_ALERT = "div[role=alert]"
 REGISTER_FIELD_ERROR = "span.field-error"
 # Captcha.tsx открывает проверку модальным <dialog> (showModal) c h2 «Bezbednosna provera».
 # Атрибута role у него нет, поэтому берём сам тег, а не [role=dialog].
+# ВНИМАНИЕ: голый <dialog> на витрине встречается и вне охраны (мобильное меню
+# каталога, диалог «Proizvod je dodat u korpu»), поэтому шлюз ищут по ТЕКСТУ
+# (CAPTCHA_TITLE_RE), а не по наличию элемента: см. Storefront.wait_for_captcha_gate.
 CAPTCHA_DIALOG = "dialog"
 
 ADD_TO_CART_RE = re.compile(r"korpu|cart", re.I)
@@ -95,6 +98,143 @@ CAPTCHA_TITLE_RE = re.compile(r"bezbednosna prover|proveravamo, da niste bot", r
 CODE_SENT_RE = re.compile(r"potvrdite\s+e-?mail", re.I)
 
 CART_ID_KEY = "tb_cart_id"
+
+# --- отзывы (ProductDetails.tsx + ProductReviews.tsx) -------------------------------
+REVIEWS_SECTION = "#reviews"
+REVIEWS_HEADING = ".review-section-heading h2"
+# блок со списком и формой скрыт, пока не нажата кнопка «Prikaži»; переход по
+# «...#reviews» раскрывает блок сам (useEffect в ProductReviews.tsx)
+REVIEWS_EXPAND = "button[aria-controls='product-review-content']"
+# раскрываемый блок со списком и формой отзыва (цель aria-controls у REVIEWS_EXPAND)
+REVIEW_CONTENT = "div#product-review-content"
+REVIEW_WRITE_ANCHOR = "#review-write"
+REVIEW_WRITE_FORM = "#review-write form"
+# radio рейтинга рендерятся только после гидратации — ждать в браузере, в SSR их нет
+REVIEW_RATINGS = 'input[name="review-rating"]'
+# у textarea отзыва нет name — держимся за форму внутри #review-write
+REVIEW_COMMENT = "#review-write textarea"
+REVIEW_SUBMIT = '#review-write button[type="submit"]'
+REVIEW_ALERT = "#product-review-content p[role=alert]"
+REVIEW_NOTICE = "#product-review-content p[role=status]"
+
+# --- избранное (FavoriteButton.tsx, WishlistLink.tsx, WishlistPage.tsx) -------------
+FAVORITE_BUTTON = "button.favorite-button"
+HEADER_WISHLIST = "a.header-wishlist"
+WISHLIST_COUNT = "span.wishlist-count"
+WISHLIST_HEADING = "h1.commerce-title"
+WISHLIST_EMPTY = "div.wishlist-empty"
+WISHLIST_GRID = "ul.product-grid"
+WISHLIST_ITEM = "ul.product-grid a.product-card-title"
+WISHLIST_UNAVAILABLE = "li.wishlist-unavailable"
+WISHLIST_MOVED = "div.wishlist-moved p[role=status]"
+
+# --- пагинация каталога (Pagination.tsx) -------------------------------------------
+PAGINATION_ACTIVE = "nav.pagination button[aria-current=page]"
+
+# --- количество и остаток на карточке (ProductDetails.tsx) --------------------------
+QUANTITY_STEPPER = "div.quantity-stepper"
+QTY_BUTTON = "button.quantity-button"
+QTY_VALUE_RE = re.compile(r"\d+")
+QTY_STEP_BUTTON_RE = re.compile(r"^\s*[+\-−]\s*$")
+# сообщение о лимите количества: «Možete dodati najviše N komada»
+STOCK_ALERT = "span[role=alert]"
+STOCK_LIMIT_RE = re.compile(r"najvi.+?e \d+ komada", re.I)
+# строка остатка на PDP: «Ukupno N komada» — число в захватывающей группе
+STOCK_AVAIL_RE = re.compile(r"ukupno\s+(\d+)\s+komada", re.I)
+# ссылка на товар в каталоге: карточки ведут на /rs/products/<handle>
+PDP_PRODUCT_LINK = "main a[href^='/rs/products/']"
+
+# --- корзина: позиции и их количество (CartPageClient.tsx) ---------------------------
+# у строки корзины класс «cart-line», количество — span.quantity-value между кнопками
+# степпера; кнопка «−» заблокирована при quantity<=1 и при исчерпанном остатке
+CART_QTY_BUTTON = "li.cart-line button.quantity-button"
+CART_LINE_ALERT = "li.cart-line p[role=alert]"
+
+# --- диалог «Proizvod je dodat u korpu» (AddedToCartDialog.tsx) ----------------------
+# модальный: перекрывает шапку, поэтому перед наведением на корзину его нужно закрыть
+CART_ADDED_DIALOG = "dialog.cart-added-dialog"
+CART_ADDED_CONTINUE = "div.cart-added-actions button.button-secondary"
+CART_ADDED_GO_TO_CART = "div.cart-added-actions a.button-primary"
+CART_ADDED_NAME = "p.cart-added-name"
+
+# --- предпросмотр корзины в шапке (CartPreview.tsx) ---------------------------------
+CART_PREVIEW_WRAP = "div.header-cart-preview"
+# href у ссылки триггера на стэнде то «/rs/cart», то «/rs/korpa» — держимся за класс
+CART_PREVIEW_TRIGGER = "div.header-cart-preview a.header-action"
+CART_PREVIEW = "section.cart-preview"
+CART_PREVIEW_ROW = "li.cart-preview-row"
+CART_PREVIEW_NAME = "span.cart-preview-name"
+CART_PREVIEW_REMOVE = "button.cart-preview-remove"
+CART_PREVIEW_TOTAL = "div.cart-preview-total strong"
+# пустая корзина в поповере — это <p role="status">, класса у него нет
+CART_PREVIEW_EMPTY = "section.cart-preview p[role=status]"
+
+# --- фильтры и сортировка каталога (CatalogFilters.tsx, CatalogClient.tsx) ----------
+CATALOG_COLOR_CHOICE = "label.catalog-color-choice"
+CATALOG_COLOR_INPUT = 'label.catalog-color-choice input[type="checkbox"]'
+CATALOG_MIN_PRICE = 'input[name="min_price"]'
+CATALOG_MAX_PRICE = 'input[name="max_price"]'
+CATALOG_FILTER_SUBMIT = "aside form button[type=submit]"
+CATALOG_COUNT = "p.catalog-count"  # текст вида «16 proizvoda»
+CATALOG_COUNT_DIGITS = re.compile(r"(\d+)")  # число из счётчика каталога
+# карточка товара в сетке каталога и её цена
+CATALOG_CARD_ITEM = "li.product-card"
+PRODUCT_CARD_PRICE = "p.product-card-price"
+CATALOG_SORT = "label.catalog-sort select"
+# значения <select> совпадают с catalogSorts из frontend/src/lib/store/catalog.ts
+CATALOG_SORTS = ("newest", "price_asc", "price_desc", "popularity")
+
+# --- профиль в личном кабинете (AccountPageClient.tsx, AccountProfileForm.tsx) ------
+# панель профиля открывается ссылкой «?panel=profile»; сама форма грузится асинхронно
+PROFILE_FORM = "form.profile-form"
+PROFILE_SUBMIT = "form.profile-form button[type=submit]"
+PROFILE_ALERT = "form.profile-form div[role=alert]"
+PROFILE_SAVED = "form.profile-form div[role=status]"
+PROFILE_SAVE_RE = re.compile(r"sa.+?uvaj izmene", re.I)
+# flash «Podaci su sačuvani.» (account.profileSaved); витрина отдаёт текст без диакритики
+PROFILE_SAVED_RE = re.compile(r"podaci su s[ae]?[cč]uvani", re.I)
+PROFILE_FIELDS = {
+    "firstName": "#profile-firstName",
+    "lastName": "#profile-lastName",
+    "phone": "#profile-phone",
+    "postalCode": "#profile-postalCode",
+    "city": "#profile-city",
+    "address1": "#profile-address1",
+    "notes": "#profile-notes",
+}
+
+
+def profile_field_error(selector: str) -> str:
+    """Селектор подписи с ошибкой поля по селектору самого поля.
+
+    AccountProfileForm.tsx рендерит под каждым полем
+    ``<span id="profile-<имя>-error" class="field-error">``.
+    """
+    return f"{selector}-error.field-error"
+
+
+# --- вход и восстановление пароля (LoginForm.tsx, paths.ts) -------------------------
+LOGIN_PATH = "/rs/account/login"
+# ссылка с формы входа ведёт на /rs/account/forgot-password (rewrite «nalog/zaboravljena-lozinka»);
+# на стэнде в href живёт кириллический слаг, поэтому принимаем оба варианта
+RESET_LINK = 'a[href="/rs/nalog/zaboravljena-lozinka"], a[href="/rs/account/forgot-password"]'
+# live-форма рендерит <input type="email" required> без name и id
+RESET_EMAIL = 'input[type="email"]'
+RESET_SUBMIT = "form button[type=submit]"
+RESET_TITLE_RE = re.compile(r"(promena|reset|obnova).*lozinke?", re.I)
+# адрес страницы восстановления — и кириллический слаг стэнда, и англоязычный rewrite
+RESET_PATH_RE = re.compile(r"/rs/(nalog/zaboravljena-lozinka|account/forgot-password)")
+# ошибка формы, относящаяся к адресу («Unesite ispravnu imejl adresu»)
+EMAIL_ERROR_RE = re.compile(r"(imejl|email|e-mail|adresa)", re.I)
+# общая подсказка об ошибке поля в формах аккаунта (проверено на живом стенде)
+FORM_ALERT = "div[role=alert], span[role=alert], span.field-error"
+
+# --- повторная покупка (AccountPageClient.tsx) ---------------------------------------
+# список заказов кабинета: <ul class="mt-4 divide-y..."><li class="py-4">…</li></ul>
+ORDER_CARD = "div#account-orders ul li"
+REPEAT_ORDER_BUTTON_RE = re.compile(r"Ponovi poru", re.I)
+# ошибка кнопки «Ponovi porudžbinu» (account.repeatPartial) — <p role=alert> в панели заказов
+REPEAT_ALERT = "div#account-orders p[role=alert]"
 
 
 class Storefront:
@@ -113,6 +253,10 @@ class Storefront:
         target.first.click()
 
     # --- каталог ------------------------------------------------------------------
+    def goto(self, path: str) -> None:
+        """Просто перейти по адресу витрины."""
+        self.page.goto(path, wait_until="domcontentloaded")
+
     def goto_catalog(self) -> None:
         self.page.goto("/rs/catalog", wait_until="domcontentloaded")
         self.page.locator(PRODUCT_CARD).first.wait_for(state="visible", timeout=30_000)
@@ -305,7 +449,7 @@ class Storefront:
 
     # --- аккаунт ------------------------------------------------------------------
     def login(self, email: str, password: str) -> None:
-        self.page.goto("/rs/account/login", wait_until="domcontentloaded")
+        self.page.goto(LOGIN_PATH, wait_until="domcontentloaded")
         self.page.locator("input[name=email]").first.wait_for(state="visible", timeout=20_000)
         self.page.fill("input[name=email]", email)
         self.page.fill("input[name=password]", password)
@@ -386,3 +530,134 @@ class Storefront:
     def registration_otp_requested(self) -> bool:
         """Появился ли экран подтверждения почты (поле для кода из письма)."""
         return self.page.locator("input[autocomplete='one-time-code']").count() > 0
+
+    # --- избранное (зона 2) --------------------------------------------------
+
+    def open_wishlist(self) -> None:
+        """Переход на страницу избранного."""
+        self.page.goto("/rs/wishlist", wait_until="domcontentloaded")
+        self.page.locator(WISHLIST_HEADING).first.wait_for(state="visible", timeout=20_000)
+
+    def wishlist_header_count(self) -> int:
+        """Счётчик у иконки избранного в шапке; -1, если списка ещё нет."""
+        node = self.page.locator(WISHLIST_COUNT)
+        if node.count() == 0:
+            return -1
+        digits = re.search(r"\d+", node.first.inner_text())
+        return int(digits.group()) if digits else -1
+
+    def wishlist_is_empty(self) -> bool:
+        """Показан ли блок «избранного нет»."""
+        return self.page.locator(WISHLIST_EMPTY).count() > 0
+
+    def wishlist_item_count(self) -> int:
+        """Сколько карточек товаров показано в избранном."""
+        return self.page.locator(WISHLIST_ITEM).count()
+
+    def favorite_state(self) -> bool:
+        """Состояние сердечка на открытой карточке товара (aria-pressed)."""
+        node = self.page.locator(FAVORITE_BUTTON).first
+        return node.get_attribute("aria-pressed") == "true"
+
+    def wait_favorite_state(self, expected: bool, timeout_s: float = 15.0) -> bool:
+        """Ждёт, пока сердечко не примет нужное состояние."""
+        return self.wait_until(lambda: self.favorite_state() is expected, timeout_s)
+
+    def toggle_favorite(self) -> None:
+        """Клик по сердечку на открытой карточке товара."""
+        self.page.locator(FAVORITE_BUTTON).first.wait_for(timeout=20_000)
+        self.page.locator(FAVORITE_BUTTON).first.click()
+
+    # --- профиль (зона 8) ----------------------------------------------------
+
+    def open_profile_panel(self) -> None:
+        """Открывает панель профиля в кабинете (форма с именем и телефоном)."""
+        self.page.goto("/rs/account", wait_until="domcontentloaded")
+        self._click_first("nav.account-nav button", re.compile(r"profil", re.I))
+        self.page.locator(PROFILE_FORM).first.wait_for(state="visible", timeout=20_000)
+
+    def profile_value(self, name: str) -> str:
+        """Текущее значение поля профильной формы (firstName, phone, ...)."""
+        return self.page.locator(f"#profile-{name}").input_value().strip()
+
+    def set_profile_value(self, name: str, value: str) -> None:
+        """Заполняет поле профильной формы."""
+        self.page.locator(f"#profile-{name}").fill(value)
+
+    def save_profile(self) -> None:
+        """Клик «Sačuvaj izmene» и ожидание ответа."""
+        self._click_first(PROFILE_SUBMIT, PROFILE_SAVE_RE)
+        self.page.wait_for_load_state("networkidle")
+
+    def profile_saved_flash(self) -> bool:
+        """Появилось ли сообщение «Podaci su sačuvani.»."""
+        return bool(PROFILE_SAVED_RE.search(self.page.locator("body").inner_text()))
+
+    def profile_error_text(self) -> str:
+        """Текст ошибки профильной формы ('', если её нет)."""
+        node = self.page.locator(PROFILE_ALERT)
+        return node.first.inner_text().strip() if node.count() else ""
+
+    # --- повтор заказа (зона 3) ----------------------------------------------
+
+    def open_orders_panel(self) -> None:
+        """Открывает список заказов в кабинете."""
+        self.open_account_orders()
+
+    def order_cards(self) -> int:
+        """Сколько заказов показано в списке."""
+        return self.page.locator(ORDER_CARD).count()
+
+    def repeat_first_order(self) -> None:
+        """Клик «Ponovi porudžbinu» у первого заказа."""
+        self._click_first(ORDER_CARD, REPEAT_ORDER_BUTTON_RE)
+
+    # --- отзывы (зона 1) -----------------------------------------------------
+
+    def reviews_heading_text(self) -> str:
+        """Заголовок блока отзывов вместе с количеством."""
+        node = self.page.locator(REVIEWS_HEADING)
+        return node.first.inner_text().strip() if node.count() else ""
+
+    def review_form_is_visible(self) -> bool:
+        """Есть ли на странице форма написания отзыва."""
+        return self.page.locator(REVIEW_WRITE_FORM).count() > 0
+
+    def review_gate_text(self) -> str:
+        """Что витрина показывает вместо формы (подсказка войти / ошибка)."""
+        node = self.page.locator(REVIEW_WRITE_ANCHOR)
+        return node.first.inner_text().strip() if node.count() else ""
+
+    def fill_review_form(self, rating: int, text: str) -> None:
+        """Заполняет форму отзыва, но не отправляет её (отправку блокирует капча)."""
+        self.page.locator(f'{REVIEW_RATINGS}[value="{rating}"]').first.check()
+        self.page.locator(REVIEW_COMMENT).first.fill(text)
+
+    def review_form_notice(self) -> str:
+        """Текст служебного сообщения под формой отзыва."""
+        node = self.page.locator(REVIEW_ALERT)
+        return node.first.inner_text().strip() if node.count() else ""
+
+    # --- превью корзины (зона 5) ---------------------------------------------
+
+    def open_cart_preview(self, timeout_s: float = 20.0) -> bool:
+        """Наводит курсор на корзину в шапке и ждёт появления поповера."""
+        trigger = self.page.locator(CART_PREVIEW_TRIGGER).first
+        trigger.wait_for(timeout=int(timeout_s * 1000))
+        trigger.hover()
+        return self.wait_until(lambda: self.page.locator(CART_PREVIEW).count() > 0,
+                               timeout_s)
+
+    def cart_preview_row_count(self) -> int:
+        """Сколько позиций показывает поповер корзины."""
+        return self.page.locator(CART_PREVIEW_ROW).count()
+
+    def cart_preview_total_text(self) -> str:
+        """Сумма в подвале поповера (как её видит покупатель)."""
+        node = self.page.locator(CART_PREVIEW_TOTAL)
+        return node.first.inner_text().strip() if node.count() else ""
+
+    def cart_preview_empty_text(self) -> str:
+        """Текст пустого поповера корзины."""
+        node = self.page.locator(CART_PREVIEW_EMPTY)
+        return node.first.inner_text().strip() if node.count() else ""
