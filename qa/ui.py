@@ -728,6 +728,17 @@ class Storefront:
         node = self.page.locator(REVIEW_WRITE_ANCHOR)
         return node.first.inner_text().strip() if node.count() else ""
 
+    def wait_for_review_gate(self, timeout_s: float = 10.0) -> str:
+        """Текст подсказки входа в блоке отзыва, дождавшись гидратации.
+
+        ``div#review-write`` пустой в SSR-разметке: подсказку рисует клиент,
+        когда ``AuthProvider`` узнал состояние входа, поэтому читать блок сразу
+        после загрузки страницы нельзя.
+        """
+        if not self.wait_until(lambda: bool(self.review_gate_text()), timeout_s):
+            return ""
+        return self.review_gate_text()
+
     def fill_review_form(self, rating: int, text: str) -> None:
         """Заполняет форму отзыва, но не отправляет её (отправку блокирует капча)."""
         self.page.locator(f'{REVIEW_RATINGS}[value="{rating}"]').first.check()
@@ -788,7 +799,9 @@ ACCOUNT_MENU_LINKS = ACCOUNT_MENU + " a"
 ACCOUNT_MENU_LOGOUT_TEXTS = ("Odjavi se", "Log out")
 
 # Язык: div.language-switcher[role=group] с кнопками sr/en; aria-pressed = текущий.
-# Переключение — cookie store_locale, путь меняется /rs <-> /en/rs.
+# Переключение — cookie store_locale, префикс пути меняется /rs <-> /en (например
+# /rs/catalog <-> /en/catalog), слаги товаров зависят от локали (crni-polusezonski-sesir
+# <-> demi-season-black-hat), поэтому сравнивать надо только префикс пути.
 LANGUAGE_SWITCHER = "div.language-switcher"
 LANGUAGE_BUTTONS = LANGUAGE_SWITCHER + " button"
 
@@ -798,7 +811,7 @@ COOKIE_BANNER = 'section[aria-labelledby="cookie-title"]'
 COOKIE_BANNER_LINKS = COOKIE_BANNER + " a"
 COOKIE_REJECT_BUTTON = COOKIE_BANNER + ' button:has-text("Odbij analitiku")'
 COOKIE_ACCEPT_BUTTON = COOKIE_BANNER + ' button:has-text("Prihvati analitiku")'
-COOKIE_SETTINGS_TRIGGER = 'button[aria-controls="cookie-banner"]'
+COOKIE_SETTINGS_TRIGGER = 'footer.store-footer button:has-text("Podešavanja kolačića")'
 CONSENT_COOKIE_NAME = "tamir_consent_v1"
 
 # Подвал: nav.footer-bottom — ссылки /terms, /privacy, /cookies.
@@ -809,8 +822,9 @@ FOOTER_LEADING_LINKS = "nav.footer-bottom a"
 CHAT_LAUNCHER = "button.tamir-chat-launcher"
 CHAT_PANEL = "section.tamir-chat-panel"
 CHAT_LOG = "div.tamir-chat-messages"
-CHAT_CLOSE_BUTTONS = CHAT_PANEL + " button:not([name=chat-message]):not([type=submit])"
-CHAT_INPUT = 'input[name="chat-message"]'
+CHAT_CLOSE_BUTTONS = CHAT_PANEL + ' button[aria-label="Zatvori"]'
+CHAT_START_BUTTON = CHAT_PANEL + ' button[type=submit]:has-text("Započni razgovor")'
+CHAT_INPUT = 'input[name="chat-message"]'  # появляется только после «Započni razgovor»
 
 # --- Каталог, категории, drawer --------------------------------------------------------
 CATALOG_SECTION = "section#catalog-products"
@@ -862,7 +876,8 @@ ACCOUNT_PHONE_INPUT = "#profile-phone"
 REVIEW_CARD = "article.review-card"
 REVIEW_ACTIONS = REVIEW_CARD + " div.review-actions"
 REVIEW_VOTE_BUTTONS = REVIEW_ACTIONS + " button"
-REVIEW_VOTE_LOGIN_LINKS = REVIEW_ACTIONS + ' a[href*="login"]'
+# LocalizedLink отдаёт ссылку в текущей локали: /rs/nalog/prijava и /en/account/login
+REVIEW_VOTE_LOGIN_LINKS = REVIEW_ACTIONS + ' a[href*="login"], ' + REVIEW_ACTIONS + ' a[href*="prijava"]'
 REVIEW_SCORE = REVIEW_ACTIONS + " span[aria-live=polite]"
 REVIEW_EXPAND_TOGGLES = REVIEW_CARD + ' button[aria-controls^="review-body-"]'
 REVIEW_BODIES = REVIEW_CARD + " div[id^=review-body-]"

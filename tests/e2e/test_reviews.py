@@ -74,12 +74,11 @@ def _pick_product_with_reviews(store: MedusaStoreClient) -> tuple[dict, dict]:
 def _gate_text(shop: Storefront) -> str:
     """Что витрина показывает вместо формы отзыва.
 
-    ``Storefront.review_gate_text()`` на этой сборке падает (в ``qa/ui.py:599``
-    читается несуществующая константа ``REVIEWS_WRITE_ANCHOR``), а править ``qa/*.py``
-    нельзя, поэтому текст читаем здесь тем же селектором из ``qa/ui.py``.
+    ``div#review-write`` в SSR пустой: подсказку «Prijavite se …» рисует клиент,
+    когда ``AuthProvider`` узнал состояние входа, поэтому ждём гидратации через
+    ``Storefront.wait_for_review_gate()``.
     """
-    node = shop.page.locator(REVIEW_WRITE_ANCHOR)
-    return node.first.inner_text().strip() if node.count() else ""
+    return shop.wait_for_review_gate()
 
 
 def _captcha_dialogs(page) -> str:
