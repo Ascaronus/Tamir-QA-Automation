@@ -52,7 +52,7 @@ self-hosted runner** (`tamir-qa`), потому что Mailpit наружу не
 Ручной прогон того же набора, что в CI:
 
 ```bash
-pytest -m "unit or smoke or api or seo or catalog"   # job qa-smoke
+pytest -m "(unit or smoke or api or seo or catalog) and not (scenario or e2e)"  # job qa-smoke
 pytest -m "e2e or scenario"                          # job qa-e2e
 ```
 

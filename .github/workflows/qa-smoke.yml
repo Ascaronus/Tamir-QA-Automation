@@ -94,12 +94,14 @@ jobs:
       # нужны. Иначе один и тот же nodeid попадает в два allure-артефакта, а
       # Allure склеивает дубли по historyId и оставляет один из них — в отчёте
       # у теста может оказаться версия без шагов. Скобки важны: у `and` приоритет
-      # выше, чем у `or`.
+      # выше, чем у `or`. Исключение `e2e` нужно потому, что браузерные тесты
+      # каталога помечены и `catalog`, и `e2e`: их гоняет только job qa-e2e,
+      # здесь им не место (лишняя нагрузка на стенд и двойные прогоны Playwright).
       - name: Запуск проверок
         run: |
           set -euo pipefail
           source .venv/bin/activate
-          pytest -m "(unit or smoke or api or seo or catalog) and not scenario" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
+          pytest -m "(unit or smoke or api or seo or catalog) and not (scenario or e2e)" --junitxml=.tmp/junit.xml ${{ inputs.headed && '--headed' || '' }}
 
       # МетADATA отчёта: из чего и где получен прогон. Значений секретов здесь нет.
       - name: Метаданные для Allure

@@ -29,7 +29,9 @@ Runner с лейблами `[self-hosted, linux, tamir-qa]` живёт на то
 
 1. ставит зависимости через `uv` (`uv venv --python 3.12`, `uv pip install -r requirements.txt`)
    и `playwright install chromium`;
-2. запускает **одним** вызовом `pytest -m "unit or smoke or api or seo or catalog" --junitxml=.tmp/junit.xml`.
+2. запускает **одним** вызовом `pytest -m "(unit or smoke or api or seo or catalog) and not (scenario or e2e)" --junitxml=.tmp/junit.xml`.
+   Исключения важны: сценарии и браузерные пути (в том числе помеченные `catalog`)
+   гоняет job qa-e2e, здесь они удваивались бы.
    Один вызов важен: `--clean-alluredir` из `addopts` (`pytest.ini`) стирал бы
    результаты предыдущего запуска;
 3. пишет в `.tmp/allure-results` файлы `environment.properties` и `executor.json` —
