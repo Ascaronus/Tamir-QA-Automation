@@ -5,7 +5,7 @@ env/
 
 # Артефакты прогонов и отчётов
 .tmp/
-allure-results/
+allure-results*/
 allure-report/
 allure_history/
 junit.xml
