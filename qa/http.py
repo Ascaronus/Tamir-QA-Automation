@@ -21,12 +21,40 @@ PUBLISHABLE_KEY_HEADER = "x-publishable-api-key"
 
 DEFAULT_TIMEOUT = 15.0
 
+#: Поле запроса и переменная окружения QA-обхода Turnstile.  Стенд включает
+#: Turnstile на трёх формах (регистрация, сброс пароля, отзыв), а автоматизация
+#: не может пройти виджет, поэтому бэкенд принимаем короткую опцию: если в теле
+#: есть ``_qa_captcha_bypass`` с токеном из ``QA_CAPTCHA_BYPASS_TOKEN``, капча не
+#: требуется.  Бэкенд применяет это только для хостов из белого списка стенда и
+#: никогда для боевого домена, поэтому здесь просто одно поле в теле.
+CAPTCHA_BYPASS_ENV = "QA_CAPTCHA_BYPASS_TOKEN"
+CAPTCHA_BYPASS_FIELD = "_qa_captcha_bypass"
+
 # Cloudflare на staging отдаёт 403 (code 1010) запросам с «библиотечным»
 # User-Agent, поэтому клиент ходит под обычным браузерным UA.
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 )
+
+
+def captcha_bypass_token() -> str:
+    """Токен обхода капчи или пустая строка, если переменная не задана."""
+    return (os.getenv(CAPTCHA_BYPASS_ENV) or "").strip()
+
+
+def with_captcha_bypass(payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Добавляет в тело запроса поле обхода Turnstile.
+
+    Возвращает новый словарь; исходный не трогается.  Если токен не настроен,
+    поле не добавляется: тесту честнее упасть на ``CAPTCHA_REQUIRED``, чем
+    незаметно проверить не то, что задумано.
+    """
+    body = dict(payload or {})
+    token = captcha_bypass_token()
+    if token:
+        body[CAPTCHA_BYPASS_FIELD] = token
+    return body
 
 
 class QaHttpClient:

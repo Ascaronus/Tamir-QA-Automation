@@ -173,12 +173,13 @@ def test_hide_review_then_restore(api_client, admin_client, steps):
                 f"count на витрине {count_after}, ожидалось {count_before - 1}"
             )
 
-        with steps("повторный POST с устаревшим version", "409 и error_code = REVIEW_CHANGED"):
+        with steps("повторный POST с устаревшим version", "409 и code = REVIEW_CHANGED"):
             status, body = _post_status_raw(
                 admin_client, review_id, {"status": "published", "version": version}
             )
             assert status == 409, f"устаревшая версия принята: HTTP {status} {body!r}"
-            code = body.get("error_code") if isinstance(body, dict) else None
+            # review-http.reviewFailure отдаёт { code, message } — обе части одинаковые
+            code = body.get("code") if isinstance(body, dict) else None
             assert code == "REVIEW_CHANGED", f"код ошибки {code!r}, ожидался REVIEW_CHANGED"
 
         with steps("вернуть отзыв и перечитать витрину",

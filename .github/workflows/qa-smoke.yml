@@ -194,6 +194,12 @@ jobs:
       # а значения живут только в secrets (см. docs/FINDINGS-frontend-backend.md).
       QA_WEB_EMAIL: ${{ secrets.QA_WEB_EMAIL }}
       QA_WEB_PASSWORD: ${{ secrets.QA_WEB_PASSWORD }}
+      # Обход шлюза Cloudflare Turnstile, который продукт завёл только для тестовых
+      # стендов (Tamir-Balkan PR #128): на стенде те же значения стоят в backend/.env,
+      # а QA передаёт токен в теле заявки. Значение живёт только в secrets, и по нему
+      # тесты понимают, доступен ли обход: без переменной они честно скипаются
+      # (qa/http.py: captcha_bypass_token / with_captcha_bypass).
+      QA_CAPTCHA_BYPASS_TOKEN: ${{ secrets.QA_CAPTCHA_BYPASS_TOKEN }}
       # Пути каталогов браузеров не задаём: Playwright сам кладёт их в
       # ~/.cache/ms-playwright раннера по ревизии сборки (chromium-<rev>), поэтому
       # версии не конфликтуют, а actions/checkout с clean: true каждый прогон

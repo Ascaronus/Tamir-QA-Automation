@@ -728,6 +728,17 @@ class Storefront:
         node = self.page.locator(REVIEW_WRITE_ANCHOR)
         return node.first.inner_text().strip() if node.count() else ""
 
+    def wait_for_review_gate(self, timeout_s: float = 10.0) -> str:
+        """Текст подсказки входа в блоке отзыва, дождавшись гидратации.
+
+        ``div#review-write`` пустой в SSR-разметке: подсказку рисует клиент,
+        когда ``AuthProvider`` узнал состояние входа, поэтому читать блок сразу
+        после загрузки страницы нельзя.
+        """
+        if not self.wait_until(lambda: bool(self.review_gate_text()), timeout_s):
+            return ""
+        return self.review_gate_text()
+
     def fill_review_form(self, rating: int, text: str) -> None:
         """Заполняет форму отзыва, но не отправляет её (отправку блокирует капча)."""
         self.page.locator(f'{REVIEW_RATINGS}[value="{rating}"]').first.check()
@@ -761,3 +772,113 @@ class Storefront:
         """Текст пустого поповера корзины."""
         node = self.page.locator(CART_PREVIEW_EMPTY)
         return node.first.inner_text().strip() if node.count() else ""
+
+# ======================================================================================
+# Контракт второй волны покрытия: шапка, категории, i18n, cookie-баннер, чат, контент
+# PDP, sr-адреса корзины/checkout/кабинета, избранное. Снято с origin/main по файлам
+# frontend/src/components/{layout,product,cart,checkout,auth,chat,catalog,pdp}/*.tsx и
+# frontend/src/messages/sr.json. ``data-testid`` во фронтенде нет; sr — латиница с
+# диакритикой («Korpa», «Odjavi se»); локали ровно две: sr (default) и en.
+# ======================================================================================
+
+# --- Шапка и навигация -----------------------------------------------------------------
+SHOP_HEADER = "header.shop-header"
+HEADER_BRAND = SHOP_HEADER + " a.header-brand"
+MOBILE_MENU_BUTTON = SHOP_HEADER + " button.mobile-menu"
+CATEGORIES_NAV = SHOP_HEADER + " div.header-categories nav.category-nav-horizontal"
+CATEGORIES_LINKS = CATEGORIES_NAV + " a"
+HEADER_ACTIONS = "div.header-actions"
+HEADER_SEARCH_FORM = "form.catalog-search"
+HEADER_SEARCH_INPUT = HEADER_SEARCH_FORM + " input[name=q]"
+HEADER_SEARCH_SUBMIT = HEADER_SEARCH_FORM + " button[type=submit]"
+HEADER_WISHLIST_LINK = "a.header-action.header-wishlist"
+ACCOUNT_TRIGGER = "div.header-account > button.header-account-trigger"
+LOGIN_DIALOG = "dialog.login-dialog"
+ACCOUNT_MENU = "nav.header-account-menu"
+ACCOUNT_MENU_LINKS = ACCOUNT_MENU + " a"
+ACCOUNT_MENU_LOGOUT_TEXTS = ("Odjavi se", "Log out")
+
+# Язык: div.language-switcher[role=group] с кнопками sr/en; aria-pressed = текущий.
+# Переключение — cookie store_locale, префикс пути меняется /rs <-> /en (например
+# /rs/catalog <-> /en/catalog), слаги товаров зависят от локали (crni-polusezonski-sesir
+# <-> demi-season-black-hat), поэтому сравнивать надо только префикс пути.
+LANGUAGE_SWITCHER = "div.language-switcher"
+LANGUAGE_BUTTONS = LANGUAGE_SWITCHER + " button"
+
+# Cookie-баннер виден только когда cookie tamir_consent_v1 отсутствует. Порядок кнопок
+# фиксированный: «Odbij analitiku» (reject) идёт раньше «Prihvati analitiku» (accept).
+COOKIE_BANNER = 'section[aria-labelledby="cookie-title"]'
+COOKIE_BANNER_LINKS = COOKIE_BANNER + " a"
+COOKIE_REJECT_BUTTON = COOKIE_BANNER + ' button:has-text("Odbij analitiku")'
+COOKIE_ACCEPT_BUTTON = COOKIE_BANNER + ' button:has-text("Prihvati analitiku")'
+COOKIE_SETTINGS_TRIGGER = 'footer.store-footer button:has-text("Podešavanja kolačića")'
+CONSENT_COOKIE_NAME = "tamir_consent_v1"
+
+# Подвал: nav.footer-bottom — ссылки /terms, /privacy, /cookies.
+STORE_FOOTER = "footer.store-footer"
+FOOTER_LEADING_LINKS = "nav.footer-bottom a"
+
+# Tamir chat: next/dynamic со ssr:false — в SSR-HTML виджета нет, ждать после hydration.
+CHAT_LAUNCHER = "button.tamir-chat-launcher"
+CHAT_PANEL = "section.tamir-chat-panel"
+CHAT_LOG = "div.tamir-chat-messages"
+CHAT_CLOSE_BUTTONS = CHAT_PANEL + ' button[aria-label="Zatvori"]'
+CHAT_START_BUTTON = CHAT_PANEL + ' button[type=submit]:has-text("Započni razgovor")'
+CHAT_INPUT = 'input[name="chat-message"]'  # появляется только после «Započni razgovor»
+
+# --- Каталог, категории, drawer --------------------------------------------------------
+CATALOG_SECTION = "section#catalog-products"
+CATALOG_TITLE_HEADING = "div.catalog-heading h1"
+CATALOG_COUNT_LABEL = "p.catalog-count span.catalog-count-label"
+CATALOG_COUNT_NUMBER = "p.catalog-count span.catalog-count-number"
+CATALOG_LOAD_MORE = "button.catalog-load-more"
+FILTER_HEADING = "h2.filter-heading"
+SIDEBAR_DRAWER = "dialog#store-sidebar.navigation-drawer"
+CATEGORY_SIDEBAR_LINKS = SIDEBAR_DRAWER + ' nav[aria-label="Categories"] a'
+CATEGORY_SIDEBAR_TOGGLE = SIDEBAR_DRAWER + " button.category-nav-toggle"
+
+# --- PDP: контент, варианты, кламп количества -----------------------------------------
+# Ссылка из корзины («Nazad na proizvode») ведёт не на PDP, поэтому путь в товар —
+# карточка каталога. h1 на PDP ровно один; h2 заняты описанием и related.
+PDP_BREADCRUMBS = "nav.product-breadcrumbs"
+PDP_TITLE_HEADING = "div.product-title-row h1"
+PDP_ATTRIBUTES = "details.product-attributes"
+PDP_ATTRIBUTE_ROWS = PDP_ATTRIBUTES + " > dl > div"
+PDP_DELIVERY = "div.product-delivery"
+PDP_RELATED = "section.related-products"
+PDP_RELATED_TITLE = "#related-products-title"
+PDP_VARIANT_FIELDSETS = "div.product-summary fieldset"
+PDP_VARIANT_BUTTONS = PDP_VARIANT_FIELDSETS + " button"
+PDP_ADDED_NOTICE = "div.product-summary div[aria-live=polite]"
+PDP_STOCK_ALERT = "div.product-summary span[role=alert]"
+
+# --- Корзина и checkout в sr-локали (URL /rs/korpa, /rs/checkout) ---------------------
+# id полей checkout-locale-независимы: #checkout-firstName, span.field-error по id
+# #checkout-firstName-error; error-тексты не локализованы — assert по aria-invalid.
+CART_PAGE_HEADING_TEXTS = ("Korpa", "Cart")
+CHECKOUT_LINK_TEXTS = ("Nastavi na checkout", "Proceed to checkout")
+CHECKOUT_SHIPPING_INPUTS = 'input[name="shipping"]'
+CHECKOUT_CONSENT_INPUT = 'input[type=checkbox][name=consent]'
+ORDER_RECEIPT_HEADING_TEXTS = ("Porudžbina je primljena", "Order received")
+ORDER_NUMBER_TEXTS = ("Broj porudžbine", "Order number")
+
+# --- Кабинет и избранное ---------------------------------------------------------------
+# id #account-orders НЕ рендерится при отсутствии заказов: count()==0, а не hidden.
+ACCOUNT_NAV = "nav.account-nav"
+ACCOUNT_PANELS = "div#account-profile, div#account-orders"
+ACCOUNT_PANEL_LINKS = ACCOUNT_NAV + " a"
+ACCOUNT_PHONE_INPUT = "#profile-phone"
+
+# --- Отзывы: карточка и голосование ---------------------------------------------------
+# Голос: POST /store/reviews/<id>/vote телом {"value": 1 | -1} (не {"votes": 1}).
+# Для гостя вместо кнопок голосования рендерится ссылка на вход; для залогиненного
+# кнопки disabled при review.voted || busy.
+REVIEW_CARD = "article.review-card"
+REVIEW_ACTIONS = REVIEW_CARD + " div.review-actions"
+REVIEW_VOTE_BUTTONS = REVIEW_ACTIONS + " button"
+# LocalizedLink отдаёт ссылку в текущей локали: /rs/nalog/prijava и /en/account/login
+REVIEW_VOTE_LOGIN_LINKS = REVIEW_ACTIONS + ' a[href*="login"], ' + REVIEW_ACTIONS + ' a[href*="prijava"]'
+REVIEW_SCORE = REVIEW_ACTIONS + " span[aria-live=polite]"
+REVIEW_EXPAND_TOGGLES = REVIEW_CARD + ' button[aria-controls^="review-body-"]'
+REVIEW_BODIES = REVIEW_CARD + " div[id^=review-body-]"
+
