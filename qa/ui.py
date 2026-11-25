@@ -119,6 +119,9 @@ REVIEW_NOTICE = "#product-review-content p[role=status]"
 
 # --- избранное (FavoriteButton.tsx, WishlistLink.tsx, WishlistPage.tsx) -------------
 FAVORITE_BUTTON = "button.favorite-button"
+# FavoriteButton.tsx держит кнопку disabled и aria-pressed=false, пока не придёт
+# GET /store/wishlist: читать состояние и кликовать можно только в :not([disabled])
+FAVORITE_READY = "button.favorite-button:not([disabled])"
 HEADER_WISHLIST = "a.header-wishlist"
 WISHLIST_COUNT = "span.wishlist-count"
 WISHLIST_HEADING = "h1.commerce-title"
@@ -183,6 +186,12 @@ PRODUCT_CARD_PRICE = "p.product-card-price"
 CATALOG_SORT = "label.catalog-sort select"
 # значения <select> совпадают с catalogSorts из frontend/src/lib/store/catalog.ts
 CATALOG_SORTS = ("newest", "price_asc", "price_desc", "popularity")
+# сетка читается одним evaluate: карточка без ссылки или цены — уже находка
+CATALOG_ROW_JS = """(sel) => Array.from(document.querySelectorAll(sel.card)).map((li) => {
+    const a = li.querySelector(sel.title);
+    const p = li.querySelector(sel.price);
+    return [a ? a.getAttribute('href') : null, p ? p.textContent.trim() : null];
+})"""
 
 # --- профиль в личном кабинете (AccountPageClient.tsx, AccountProfileForm.tsx) ------
 # панель профиля открывается ссылкой «?panel=profile»; сама форма грузится асинхронно
@@ -202,6 +211,24 @@ PROFILE_FIELDS = {
     "address1": "#profile-address1",
     "notes": "#profile-notes",
 }
+# комплект, который форма отдаёт в upsertCustomerShippingAddress целиком
+# (profile-fields.ts): заполнены город и индекс — обязателен и address1
+PROFILE_ADDRESS_FIELDS = ("address1", "city", "postalCode")
+# AccountProfileForm.tsx держит город списком registrationCities с вариантом
+# «другой город» (__other): пока выбран вариант списка, #profile-city — <select>,
+# а после __other под тем же id появляется текстовое поле (список при этом
+# сбрасывает city в "")
+PROFILE_CITY_OTHER = "__other"
+# пустой address_1 витрина хранит как «-» (AccountProfileForm.tsx) и читает обратно
+# пустотой (apply-customer.ts), поэтому восстановить пустое поле можно только прочерком
+PROFILE_ADDRESS_PLACEHOLDER = "-"
+
+
+def money_to_number(text: str) -> float:
+    """«1.440,00\xa0RSD» -> 1440.0 (разделитель тысяч — точка, дробь — запятая)."""
+    cleaned = text.replace("\xa0", " ").strip()
+    digits = re.sub(r"[^\d,.]", "", cleaned)
+    return float(digits.replace(".", "").replace(",", "."))
 
 
 def profile_field_error(selector: str) -> str:
@@ -270,6 +297,42 @@ class Storefront:
     def open_product(self, href: str) -> None:
         self.page.goto(href, wait_until="domcontentloaded")
         self.page.locator(PRODUCT_TITLE).first.wait_for(state="visible", timeout=30_000)
+
+    # --- сетка каталога -----------------------------------------------------------
+    def catalog_rows(self) -> list[tuple[str, str]]:
+        """Пары «ссылка карточки, текст цены» в том порядке, что показывает сетка.
+
+        Во время перерисовки страницы ``evaluate`` может поймать уничтоженный
+        контекст — возвращаем пустой список, чтобы ``wait_until`` просто подождал.
+        """
+        try:
+            rows = self.page.evaluate(
+                CATALOG_ROW_JS,
+                {"card": CATALOG_CARD_ITEM, "title": PRODUCT_CARD, "price": PRODUCT_CARD_PRICE},
+            )
+        except Exception:  # noqa: BLE001 — страница перерисовывается, сетку рано читать
+            return []
+        return [(href or "", price or "") for href, price in rows]
+
+    def catalog_hrefs(self) -> list[str]:
+        """Ссылки карточек сетки в текущем порядке каталога."""
+        return [href for href, _price in self.catalog_rows() if href]
+
+    def catalog_prices(self) -> list[float]:
+        """Цены карточек сетки числом, в текущем порядке каталога."""
+        return [money_to_number(price) for _href, price in self.catalog_rows() if price]
+
+    def catalog_count(self) -> int:
+        """Число товаров из счётчика ``p.catalog-count`` («16 proizvoda» -> 16)."""
+        node = self.page.locator(CATALOG_COUNT)
+        assert node.count() > 0, "счётчик товаров в каталоге не найден"
+        match = CATALOG_COUNT_DIGITS.search(node.first.inner_text())
+        assert match, f"в счётчике нет числа: {node.first.inner_text()!r}"
+        return int(match.group(1))
+
+    def sort_catalog(self, value: str) -> None:
+        """Выбирает сортировку из ``<select>`` панели каталога (CATALOG_SORTS)."""
+        self.page.select_option(CATALOG_SORT, value)
 
     # --- карточка товара ----------------------------------------------------------
     def product_title(self) -> str:
@@ -554,10 +617,32 @@ class Storefront:
         """Сколько карточек товаров показано в избранном."""
         return self.page.locator(WISHLIST_ITEM).count()
 
+    def wishlist_unavailable_count(self) -> int:
+        """Сколько позиций показаны как «нет в продаже» (WISHLIST_UNAVAILABLE)."""
+        return self.page.locator(WISHLIST_UNAVAILABLE).count()
+
+    def wait_wishlist_size(self, expected: int, timeout_s: float = 30.0) -> bool:
+        """Ждёт, пока страница избранного дорисует ``expected`` карточек и счётчик в шапке.
+
+        ``WishlistPage.tsx`` сначала отдаёт ``<p role=status>``: идут ``GET /store/wishlist``
+        и подборка товаров, поэтому считать карточки сразу после ``page.goto`` нельзя.
+        """
+        return self.wait_until(
+            lambda: self.wishlist_item_count() == expected
+            and self.wishlist_header_count() == expected,
+            timeout_s,
+        )
+
     def favorite_state(self) -> bool:
         """Состояние сердечка на открытой карточке товара (aria-pressed)."""
         node = self.page.locator(FAVORITE_BUTTON).first
         return node.get_attribute("aria-pressed") == "true"
+
+    def wait_favorite_ready(self, timeout_s: float = 20.0) -> None:
+        """Ждёт, пока сердечко на карточке готово к клику и чтению состояния."""
+        self.page.locator(FAVORITE_READY).first.wait_for(
+            state="attached", timeout=int(timeout_s * 1000)
+        )
 
     def wait_favorite_state(self, expected: bool, timeout_s: float = 15.0) -> bool:
         """Ждёт, пока сердечко не примет нужное состояние."""
@@ -583,6 +668,21 @@ class Storefront:
     def set_profile_value(self, name: str, value: str) -> None:
         """Заполняет поле профильной формы."""
         self.page.locator(f"#profile-{name}").fill(value)
+
+    def set_profile_city(self, value: str) -> None:
+        """Пишет город, при необходимости переключив список на «другой город»."""
+        field = PROFILE_FIELDS["city"]
+        if self.page.evaluate(f"() => document.querySelector('{field}').tagName") == "SELECT":
+            known = self.page.eval_on_selector_all(
+                f"{field} option", "els => els.map(e => e.value)"
+            )
+            if value in known:
+                self.page.select_option(field, value=value)
+                return
+            # города в списке нет: после __other под тем же id появляется <input>
+            self.page.select_option(field, PROFILE_CITY_OTHER)
+            self.page.wait_for_selector(f"input{field}")
+        self.page.fill(field, value)
 
     def save_profile(self) -> None:
         """Клик «Sačuvaj izmene» и ожидание ответа."""
