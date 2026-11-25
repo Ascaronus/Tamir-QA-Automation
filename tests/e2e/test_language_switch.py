@@ -1,4 +1,4 @@
-"""E2E-16. Переключатель языка в шапке переводит витрину sr↔en: адрес, cookie store_locale и тексты."""
+"""E2E-17. Переключатель языка в шапке переводит витрину sr↔en: адрес, cookie store_locale и тексты."""
 
 from __future__ import annotations
 
