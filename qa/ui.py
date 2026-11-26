@@ -259,6 +259,8 @@ FORM_ALERT = "div[role=alert], span[role=alert], span.field-error"
 # --- повторная покупка (AccountPageClient.tsx) ---------------------------------------
 # список заказов кабинета: <ul class="mt-4 divide-y..."><li class="py-4">…</li></ul>
 ORDER_CARD = "div#account-orders ul li"
+# заголовок строки заказа: t("account.orderLabel", { id }) в AccountPageClient.tsx
+ORDER_CARD_LABEL = "div#account-orders ul li div.min-w-0 > div.text-sm.font-semibold"
 REPEAT_ORDER_BUTTON_RE = re.compile(r"Ponovi poru", re.I)
 # ошибка кнопки «Ponovi porudžbinu» (account.repeatPartial) — <p role=alert> в панели заказов
 REPEAT_ALERT = "div#account-orders p[role=alert]"
@@ -297,6 +299,12 @@ class Storefront:
     def open_product(self, href: str) -> None:
         self.page.goto(href, wait_until="domcontentloaded")
         self.page.locator(PRODUCT_TITLE).first.wait_for(state="visible", timeout=30_000)
+
+    def scroll_to_bottom(self) -> None:
+        """Доводит страницу до низа — без прокрутки ленивые блоки (связанные товары)
+        не появляются: витрина подгружает их по IntersectionObserver."""
+        self.page.mouse.wheel(0, 10_000)
+        self.page.mouse.wheel(0, 10_000)
 
     # --- сетка каталога -----------------------------------------------------------
     def catalog_rows(self) -> list[tuple[str, str]]:
@@ -708,6 +716,21 @@ class Storefront:
         """Сколько заказов показано в списке."""
         return self.page.locator(ORDER_CARD).count()
 
+    def order_card(self, display_id: object) -> Locator:
+        """Строка заказа в кабинете по короткому номеру (``display_id``).
+
+        Номер ищем в заголовке строки (``account.orderLabel``), а не по всему
+        тексту строки: в тексте есть даты и суммы (``26. 11. 2026.``,
+        ``1.440,00``), а ``\\b`` в regex селекторах Playwright работает
+        непредсказуемо.  Внутри заголовка номер ограничивается цифрами с обеих
+        сторон, поэтому ``109`` не находит ``1090``.
+        """
+        return (
+            self.page.locator(ORDER_CARD_LABEL)
+            .filter(has_text=re.compile(rf"(?<!\d){display_id}(?!\d)"))
+            .locator("xpath=ancestor::li")
+        )
+
     def repeat_first_order(self) -> None:
         """Клик «Ponovi porudžbinu» у первого заказа."""
         self._click_first(ORDER_CARD, REPEAT_ORDER_BUTTON_RE)
@@ -844,9 +867,17 @@ PDP_BREADCRUMBS = "nav.product-breadcrumbs"
 PDP_TITLE_HEADING = "div.product-title-row h1"
 PDP_ATTRIBUTES = "details.product-attributes"
 PDP_ATTRIBUTE_ROWS = PDP_ATTRIBUTES + " > dl > div"
-PDP_DELIVERY = "div.product-delivery"
+#: Блок «Доставка и возврат» — один из трёх ``details.product-policy``; его узнаём
+#: по ссылке на условия (``a.product-details-link`` рисует только этот блок).
+#: ``div.product-delivery`` в вёрстке витрины не существует (аудит frontend/).
+PDP_DELIVERY = "details.product-policy:has(a.product-details-link)"
+PDP_DELIVERY_SUMMARY = PDP_DELIVERY + " > summary"
+PDP_DELIVERY_TERMS_LINK = PDP_DELIVERY + " a.product-details-link"
+#: Связанные товары отрисованы лениво (IntersectionObserver + второй fetch каталога),
+#: поэтому появляются только после прокрутки к низу страницы.
 PDP_RELATED = "section.related-products"
 PDP_RELATED_TITLE = "#related-products-title"
+PDP_RELATED_CARDS = PDP_RELATED + " ul.product-grid > li"
 PDP_VARIANT_FIELDSETS = "div.product-summary fieldset"
 PDP_VARIANT_BUTTONS = PDP_VARIANT_FIELDSETS + " button"
 PDP_ADDED_NOTICE = "div.product-summary div[aria-live=polite]"
