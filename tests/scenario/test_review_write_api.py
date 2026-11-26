@@ -10,20 +10,24 @@ CAPTCHA_REQUIRED``, рейтинг вне шкалы — ``400 RATING_REQUIRED``
 тратит писем. За собой тестирующий гасит отзыв админ-API мягким удалением
 ``POST /admin/reviews/<id>`` телом ``{"status": "deleted", "version": N}``:
 жёсткого удаления в продукте нет, а ``version`` обязана совпадать с текущей
-(отзыв, созданный через API, стартует с ``version = 0``). Если учётка прогона
-не модератор, уборка фиксируется в отчёте, но не валит и не скипает тест.
-Чужие отзывы (сид ``QA-FIXTURE``) не трогаются.
+(отзыв, созданный через API, стартует с ``version = 0``). Уборка проверяемая:
+после неё отзыв обязан исчезнуть и из витрины, и из ``published`` в админке,
+иначе тест падает, а не оставляет на стенде мусор. Отзыв не создаётся вовсе,
+если админка отзывов недоступна (``503 REVIEWS_UNAVAILABLE``, см. TB-26):
+погасить его было бы нечем. Чужие отзывы (сид ``QA-FIXTURE``) не трогаются.
 """
 
 from __future__ import annotations
 
 import uuid
+from typing import Any, Optional
 
 import allure
 import pytest
 import requests
 
 from qa.http import CAPTCHA_BYPASS_ENV, captcha_bypass_token, with_captcha_bypass
+from qa.medusa_admin import MedusaAdminError
 
 pytestmark = [pytest.mark.scenario, pytest.mark.api]
 
@@ -102,19 +106,85 @@ def _bearer(api_client, token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _admin_headers(admin_client) -> dict[str, str]:
+    """Заголовок модератора для прямых вызовов админ-API."""
+    return {"Authorization": f"Bearer {admin_client.login()}"}
+
+
+def _find_admin_review(client, headers: dict[str, str], review_id: str) -> tuple[Optional[dict], int, Any]:
+    """Строка отзыва в ``GET /admin/reviews``; ``(None, код, тело)``, если строки нет.
+
+    Свежий отзыв админка отдаёт первым, но список листается, поэтому проходим
+    до трёх страниц по 100. Если вместо списка пришла ошибка (``503
+    REVIEWS_UNAVAILABLE``), возвращаем её код и тело — по ним видно, что
+    модерация лежит (TB-26), а не то, что отзыва просто нет.
+    """
+    for offset in (0, 100, 200):
+        response = client.get(
+            f"/admin/reviews?limit=100&offset={offset}&fields=id,status,version",
+            headers=headers,
+            publishable_key=False,
+        )
+        body = client.json_of(response) or {}
+        rows = body.get("reviews")
+        if not isinstance(rows, list):
+            return None, response.status_code, body
+        for row in rows:
+            if str(row.get("id")) == review_id:
+                return row, response.status_code, body
+        if len(rows) < 100:
+            break
+    return None, 200, None
+
+
+def _moderation_state(admin_client) -> tuple[bool, str]:
+    """Жива ли модерация отзывов: ``(да, "")`` или ``(нет, текст для skip)``.
+
+    Проверка идёт до создания отзыва: без ``GET /admin/reviews`` погасить свой
+    отзыв нечем, а неубранный отзыв остаётся опубликованным на стенде.
+    """
+    client = admin_client.client
+    try:
+        response = client.get(
+            "/admin/reviews?limit=1&offset=0&fields=id,status,version",
+            headers=_admin_headers(admin_client),
+            publishable_key=False,
+        )
+    except (requests.RequestException, MedusaAdminError) as exc:
+        return False, f"GET /admin/reviews не ответил: {exc}"
+    if response.status_code in (200, 201):
+        return True, ""
+    body = client.json_of(response) or {}
+    code = body.get("code") or body.get("error_code") or body.get("message") or "?"
+    hint = " — см. TB-26 (модератор без карточки покупателя)" if response.status_code == 503 else ""
+    return False, f"GET /admin/reviews вернул {response.status_code} {code}{hint}"
+
+
 def _soft_delete_review(admin_client, review_id: str) -> str:
-    """Гасит отзыв мягким удалением (``status = deleted``); "" если вышло.
+    """Гасит отзыв мягким удалением и проверяет, что он ушёл; "" если вышло.
 
     ``POST /admin/reviews/<id>`` сверяет ``version`` с текущей строкой: не
     совпала — ``409 REVIEW_CHANGED``. Отзыв, созданный через API витрины,
-    стартует с ``version = 0`` (сиды стэнда — с ``1``), поэтому перебираем
-    оба номера, а затем берём актуальную ``version`` из админ-списка.
+    стартует с ``version = 0`` (сиды стэнда — с ``1``), поэтому сначала берём
+    актуальную ``version`` из админ-списка, а её номер и запасные версии.
+    После правки строка обязана исчезнуть из админ-списка или перестать быть
+    ``published`` — это и проверяем, поэтому протекающий отзыв тест не спрячет.
     """
     client = admin_client.client
-    headers = {"Authorization": f"Bearer {admin_client.login()}"}
     last_status = 0
     try:
-        for version in (0, 1, 2, 3):
+        headers = _admin_headers(admin_client)
+        row, list_status, _ = _find_admin_review(client, headers, review_id)
+        if row is None and list_status not in (200, 201):
+            return (
+                f"GET /admin/reviews вернул {list_status}: удалить и проверить отзыв "
+                "нечем — см. TB-26"
+            )
+        versions: list[int] = []
+        if isinstance(row, dict) and isinstance(row.get("version"), int):
+            versions.append(row["version"])
+        versions.extend([0, 1, 2, 3])
+        for version in dict.fromkeys(versions):
             response = client.post(
                 f"/admin/reviews/{review_id}",
                 json={"status": "deleted", "version": version},
@@ -123,24 +193,24 @@ def _soft_delete_review(admin_client, review_id: str) -> str:
             )
             last_status = response.status_code
             if response.status_code in (200, 201) and (client.json_of(response) or {}).get("success"):
+                break
+
+        row, list_status, _ = _find_admin_review(client, headers, review_id)
+        if row is None:
+            if list_status in (200, 201):
                 return ""
-        listed = client.get(
-            "/admin/reviews?limit=50&offset=0&fields=id,status,version",
-            headers=headers,
-            publishable_key=False,
+            return (
+                f"проверить уборку не удалось: GET /admin/reviews вернул {list_status} "
+                "— см. TB-26"
+            )
+        status = str(row.get("status") or "")
+        if status != "published":
+            return ""
+        return (
+            f"отзыв {review_id} остался status = published "
+            f"(POST /admin/reviews/{review_id} вернул {last_status})"
         )
-        for row in (client.json_of(listed) or {}).get("reviews") or []:
-            if str(row.get("id")) == review_id and isinstance(row.get("version"), int):
-                response = client.post(
-                    f"/admin/reviews/{review_id}",
-                    json={"status": "deleted", "version": row["version"]},
-                    headers=headers,
-                    publishable_key=False,
-                )
-                last_status = response.status_code
-                if response.status_code in (200, 201) and (client.json_of(response) or {}).get("success"):
-                    return ""
-    except requests.RequestException as exc:  # сеть/таймаут — не провал сценария
+    except (requests.RequestException, MedusaAdminError) as exc:  # сеть/таймаут — не провал сценария
         return f"уборка не выполнена: {exc}"
     return (
         f"POST /admin/reviews/{review_id} (status = deleted) вернул {last_status}: "
@@ -151,8 +221,16 @@ def _soft_delete_review(admin_client, review_id: str) -> str:
 @allure.story("Отзыв покупателя: публикация и витрина")
 @allure.severity(allure.severity_level.CRITICAL)
 def test_review_publishes_and_appears_on_storefront(api_client, mailbox, admin_client, run_tag, steps):
-    """Капча и рейтинг отсекаются, валидный отзыв сразу виден витрине, уборка админом."""
+    """Капча и рейтинг отсекаются, отзыв сразу виден витрине, уборка проверена."""
     _skip_without_captcha_bypass()
+    with steps("проверить, что модерация отзывов жива", "GET /admin/reviews = 200"):
+        moderation_ok, moderation_note = _moderation_state(admin_client)
+        if not moderation_ok:
+            # Без админки отзывов нечем гасить свой отзыв, а неубранный отзыв
+            # остаётся опубликованным на витрине стенда.
+            pytest.skip(
+                f"отзыв не создаём: погасить его нечем ({moderation_note})"
+            )
     http = _http(api_client)
     email = _new_email(run_tag)
     token = _register_and_login(api_client, mailbox, email, steps)
@@ -226,15 +304,33 @@ def test_review_publishes_and_appears_on_storefront(api_client, mailbox, admin_c
             assert mine.get("has_review") is True, f"has_review для автора: {mine.get('has_review')!r}"
             assert int(mine.get("count") or 0) >= 1, f"count опубликованных отзывов: {mine.get('count')!r}"
 
-        with steps("погасить отзыв за собой (best effort)", "note, если прав модератора нет"):
+        with steps("погасить отзыв за собой", "мягкое удаление принято админкой"):
             cleanup_note = _soft_delete_review(admin_client, review_id)
+
+        with steps("отзыв убран с витрины", "review_id исчез из GET /store/reviews"):
+            # Витрина отдаёт только ``published``: её ответ и есть проверка уборки,
+            # поэтому протекающий отзыв тест уже не спрячет заметкой в отчёте.
+            response = http.get("/store/reviews", params={"product_id": PRODUCT_ID})
+            assert response.status_code == 200, (
+                f"GET /store/reviews вернул {response.status_code}: {http.json_of(response)!r}"
+            )
+            ids = [str(r.get("id") or "") for r in http.json_of(response).get("reviews") or []]
+            assert review_id not in ids, (
+                f"отзыв {review_id} остался опубликованным на стенде — уборка не прошла: "
+                f"{cleanup_note or 'админка не ответила (см. TB-26)'}"
+            )
+            if cleanup_note:
+                allure.attach(cleanup_note, "уборка: замечание к админ-API", allure.attachment_type.TEXT)
+            cleanup_note = ""
             review_id = ""
     finally:
         if review_id:
             cleanup_note = cleanup_note or _soft_delete_review(admin_client, review_id)
     if cleanup_note:
-        # Уборка не результат сценария: фиксируем в отчёт (как в тесте сброса пароля).
+        # Сюда попадаем, только если шаг про витрину не дошёл до конца: тогда
+        # протечка не проверена и её нужно показать в отчёте отдельным провалом.
         allure.attach(cleanup_note, "уборка отзыва", allure.attachment_type.TEXT)
+        pytest.fail(f"уборка отзыва не подтверждена: {cleanup_note}")
 
 
 @allure.story("Отзыв покупателя: публикация и витрина")
