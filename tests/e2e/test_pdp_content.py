@@ -1,5 +1,6 @@
-"""E2E-PDP: карточка товара на живом стэнде — заголовок и крошки сходятся с API, цена, наличие,
-выбор варианта и характеристики отрисованы, а блоков доставки и похожих товаров стенд не рисует."""
+"""E2E-21: карточка товара на живом стенде — заголовок и крошки сходятся с API, цена,
+наличие, выбор варианта и характеристики отрисованы, блок доставки/возврата раскрывается,
+похожие товары доезжают после прокрутки."""
 
 from __future__ import annotations
 
@@ -12,7 +13,11 @@ from qa.ui import (
     PDP_ATTRIBUTE_ROWS,
     PDP_BREADCRUMBS,
     PDP_DELIVERY,
+    PDP_DELIVERY_SUMMARY,
+    PDP_DELIVERY_TERMS_LINK,
     PDP_RELATED,
+    PDP_RELATED_CARDS,
+    PDP_RELATED_TITLE,
     PDP_TITLE_HEADING,
     PDP_VARIANT_BUTTONS,
     PDP_VARIANT_FIELDSETS,
@@ -153,20 +158,35 @@ def test_pdp_variant_options_and_attributes(page, steps, api_client: MedusaStore
 
 
 def test_pdp_delivery_and_related_blocks(page, steps, api_client: MedusaStoreClient) -> None:
-    """Блоки доставки и похожих товаров: проверяются только если стенд их рисует."""
+    """Блок доставки/возврата раскрывается, похожие товары появляются после прокрутки."""
     product = _pick_product(api_client, steps)
     shop = Storefront(page)
     _open_pdp(shop, page, product, steps)
 
-    with steps("найти блоки доставки и похожих товаров",
-               f"{PDP_DELIVERY} и {PDP_RELATED} заполнены, если стенд их отдаёт"):
-        rendered = {
-            PDP_DELIVERY: page.locator(PDP_DELIVERY).count(),
-            PDP_RELATED: page.locator(PDP_RELATED).count(),
-        }
-        if not any(rendered.values()):
-            pytest.skip(
-                f"стенд не рисует блоки доставки и похожих товаров: {rendered}; "
-                f"на карточке есть только блоки характеристик {PDP_ATTRIBUTES}")
-        assert rendered[PDP_DELIVERY] >= 1, f"блок доставки {PDP_DELIVERY} отсутствует: {rendered}"
-        assert rendered[PDP_RELATED] >= 1, f"блок похожих товаров {PDP_RELATED} отсутствует: {rendered}"
+    with steps("развернуть блок доставки и возврата",
+               f"в {PDP_DELIVERY} есть текст о доставке и ссылка на условия"):
+        delivery = page.locator(PDP_DELIVERY)
+        assert delivery.count() >= 1, (
+            f"селектор {PDP_DELIVERY} не найден на карточке ({delivery.count()}) — "
+            "витрина рисует блок «Dostava i plaćanje / Povraćaj i zamena» у каждого товара")
+        summary = page.locator(PDP_DELIVERY_SUMMARY).first
+        summary.click()
+        body = (delivery.first.inner_text() or "").strip()
+        assert body, f"раскрытый {PDP_DELIVERY} оказался без текста"
+        terms = page.locator(PDP_DELIVERY_TERMS_LINK)
+        assert terms.count() >= 1, \
+            f"в {PDP_DELIVERY} нет ссылки на условия доставки ({PDP_DELIVERY_TERMS_LINK})"
+
+    with steps("докрутить страницу до конца и дождаться похожих товаров",
+               f"{PDP_RELATED} виден, заголовок {PDP_RELATED_TITLE} непустой, карточки есть"):
+        shop.scroll_to_bottom()
+        assert shop.wait_until(lambda: page.locator(PDP_RELATED).count() > 0, 25), \
+            (f"после прокрутки так и не появился {PDP_RELATED} — витрина подгружает его "
+             "со вторым запросом к каталогу")
+        related = page.locator(PDP_RELATED).first
+        related.scroll_into_view_if_needed()
+        assert related.is_visible(), f"{PDP_RELATED} есть в DOM, но не виден"
+        title = page.locator(PDP_RELATED_TITLE).first.inner_text().strip()
+        assert title, f"заголовок {PDP_RELATED_TITLE} пустой"
+        cards = page.locator(PDP_RELATED_CARDS).count()
+        assert cards >= 1, f"в {PDP_RELATED} ни одной карточки товара ({PDP_RELATED_CARDS})"

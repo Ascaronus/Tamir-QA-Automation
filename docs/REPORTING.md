@@ -251,6 +251,7 @@ python3 qa/publish_runs_index.py \
 | `MEDUSA_ADMIN_EMAIL`, `MEDUSA_ADMIN_PASSWORD` | `qa-e2e`: отмена заказов админкой и уборка данных |
 | `MAILPIT_URL`, `MAILPIT_USER`, `MAILPIT_PASSWORD` | `qa-e2e`: чтение тестовой почты (доступно только из локальной сети стенда) |
 | `QA_WEB_EMAIL`, `QA_WEB_PASSWORD` | `qa-e2e`: учётка постоянного тестового покупателя на стенде (регистрация закрыта Turnstile, см. [FINDINGS-frontend-backend.md](FINDINGS-frontend-backend.md)) |
+| `QA_CAPTCHA_BYPASS_TOKEN` | `qa-e2e`: обход Turnstile на стенде (заголовок `x-qa-captcha-bypass`; продукт понимает его только для хостов `test.tamir.rs` / `test-api.tamir.rs`) |
 | `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD` | `qa-report`: сидинг каталога и перенос результатов в Kiwi TCMS |
 | `vars.WEB_URL`, `vars.API_URL` | `qa-e2e`: адреса стенда (конфигурационные переменные, не секреты) |
 
@@ -290,16 +291,25 @@ python3 qa/publish_runs_index.py \
 
 ## Что пока не закрыто
 
-- **`qa-e2e` ещё ни разу не выполнялся** — Playwright на self-hosted runner
-  (`tamir-qa`) установлен вручную, но прогон в CI ещё не запускался. Первый
-  прогон с пуша покажет, что браузеры видны (`~/.cache/ms-playwright`) и что
-  хост-резолвер в CI не нужен.
-- **Нет секретов `MAILPIT_*`** — сценарий «зарегистрированный покупатель» в CI
-  пропускается (в TCMS такое исполнение помечается `BLOCKED`).
+- **Падение `qa-e2e` не подсвечивается в индексе прогонов.** Сам джоб в
+  пайплайне работает: после слияния в `main` он гоняет `pytest -m "e2e or
+  scenario"` на `tamir-qa`, а его артефакты `allure-results-e2e` и `steps-e2e`
+  вливаются в общий отчёт в `qa-report` (`pattern: allure-results*`, шаги —
+  `steps*`). Но статус в `runs.json` передаётся по результату `qa-smoke`
+  (см. п. 4), поэтому упавший браузерный прогон виден только в Allure-отчёте
+  и в логе джобы.
+- **Почтовые проверки привязаны к стендовой сети.** Секреты `MAILPIT_URL`,
+  `MAILPIT_USER` и `MAILPIT_PASSWORD` в репозитории заведены, и сценарии
+  регистрации и восстановления пароля (S3-1, S3-2) читают коды из API Mailpit.
+  При этом Mailpit не публикуется за пределы локальной сети стенда, поэтому
+  почтовые проверки доступны только self-hosted раннеру, а успешная регистрация
+  в браузере по-прежнему не покрыта: E2E-2 проверяет только шлюз Turnstile,
+  сама регистрация идёт через API (см. [TEST-PLAN.md](TEST-PLAN.md), §14.1).
 - **Cloudflare Access для `tcms.tamir.rs` не включён** — сейчас JSON-RPC доступен
   из публичного интернета, и именно поэтому сидинг и перенос результатов живут в
-  GitHub-hosted `qa-report`. Как только Access включится, эти шаги нужно
-  переносить на self-hosted джоб (например `qa-tcms`), иначе начнёт отвечать `403`.
+  GitHub-hosted `qa-report` (секреты `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD`).
+  Как только Access включится, эти шаги нужно переносить на self-hosted джоб
+  (например `qa-tcms`), иначе начнёт отвечать `403`.
 
 Ранее здесь был пункт «результаты `qa-e2e` не попадают в TCMS» — он закрыт:
 перенос читает объединённые артефакты обоих прогонов в `qa-report`.

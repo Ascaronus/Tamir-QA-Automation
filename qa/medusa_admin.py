@@ -12,6 +12,10 @@
 * повторная отмена уже отменённого заказа — ошибка, поэтому отменённые
   пропускаем;
 * ``DELETE /admin/customers/{id}`` — работает;
+* ``POST /admin/orders`` — 404, так заказ не создаётся. Порядок для тестового
+  заказа — ``POST /admin/draft-orders`` (валидатор принимает ``customer_id``) и
+  ``POST /admin/draft-orders/{id}/convert-to-order``: после конвертации заказ
+  ``status=pending``, ``is_draft_order=false`` и виден покупателю в кабинете;
 * ``GET /admin/carts`` — 404, списка корзин в этом сборке нет (и ``DELETE
   /store/carts/{id}`` тоже 404): корзины остаются и умирают сами по сроку
   хранения Medusa, трогать их нечем;
@@ -170,6 +174,63 @@ class MedusaAdminClient:
             if str(order.get("display_id")) == str(display_id):
                 return order
         return None
+
+    def customer_id_for_email(self, email: str) -> str:
+        """``customer_id`` покупателя по почте; ``""`` — такого покупателя нет."""
+        needle = email.strip().lower()
+        for customer in self.list_all("/admin/customers", "customers", CUSTOMER_FIELDS):
+            if str(customer.get("email") or "").strip().lower() == needle:
+                return str(customer["id"])
+        return ""
+
+    def create_order_for_customer(
+        self,
+        *,
+        customer_id: str,
+        region_id: str,
+        variant_id: str,
+        unit_price: int,
+        quantity: int = 1,
+        run_tag: str = "qa",
+    ) -> dict[str, Any]:
+        """Настоящий заказ на тестового покупателя — через черновик.
+
+        Кабинет показывает только заказы с ``customer_id`` этого покупателя и
+        ``is_draft_order=false``, поэтому путь такой: ``POST /admin/draft-orders``
+        (валидатор принимает ``customer_id``) и ``POST
+        /admin/draft-orders/{id}/convert-to-order``. Заказ помечается
+        ``metadata.qa_run``: удалить его нельзя (``DELETE /admin/orders/{id}`` —
+        404), поэтому убирать заказ обязан вызывающий код через
+        :meth:`cancel_order`.
+        """
+        draft = self.post(
+            "/admin/draft-orders",
+            {
+                "region_id": region_id,
+                "customer_id": customer_id,
+                "metadata": {"qa_run": run_tag},
+                "items": [
+                    {"variant_id": variant_id, "quantity": quantity, "unit_price": unit_price}
+                ],
+            },
+        )
+        draft_id = ((draft or {}).get("draft_order") or {}).get("id")
+        if not draft_id:
+            raise MedusaAdminError(f"черновик заказа не создан: {self.last_error}")
+        converted = self.post(f"/admin/draft-orders/{draft_id}/convert-to-order", {})
+        order_id = ((converted or {}).get("order") or {}).get("id")
+        if not order_id:
+            raise MedusaAdminError(
+                f"черновик {draft_id} не конвертирован в заказ: {self.last_error}"
+            )
+        body = self.get(
+            f"/admin/orders/{order_id}"
+            "?fields=id,display_id,status,customer_id,is_draft_order,metadata,items"
+        )
+        order = (body or {}).get("order")
+        if not order:
+            raise MedusaAdminError(f"заказ {order_id} не читается после конвертации")
+        return order
 
     def find_qa_customers(self, keep: Iterable[str] = ()) -> tuple[list[dict], list[dict]]:
         """Тестовые покупатели: ``(кого убрать, кого не трогать)``.

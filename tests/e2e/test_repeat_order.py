@@ -1,7 +1,9 @@
 """E2E-15. Повторная покупка: кнопка в списке заказов собирает позиции заказа в корзину
 
-Тест жмёт «Ponovi porudžbinu» в первом заказе: витрина переносит позиции в
-корзину и открывает ``/rs/cart``. Заказ не оформляется, корзина чистится API."""
+Тест жмёт «Ponovi porudžbinu» у заказа, который фикстура прогона оформила на
+тестовый аккаунт через админ-API (черновик + конвертация): витрина переносит
+позиции заказа в корзину и открывает ``/rs/cart``. Новый заказ при этом не
+оформляется, корзина чистится API, а заказ фикстуры отменяется в конце прогона."""
 
 from __future__ import annotations
 
@@ -11,7 +13,6 @@ from qa.medusa_store import MedusaStoreClient
 from qa.ui import (
     CART_LINE,
     CART_LINE_TITLE,
-    ORDER_CARD,
     REPEAT_ALERT,
     REPEAT_ORDER_BUTTON_RE,
     Storefront,
@@ -35,22 +36,24 @@ def _cleanup_carts(api_client: MedusaStoreClient):
     _LEFTOVER_CARTS.clear()
 
 
-def test_repeat_order_fills_cart_from_account(logged_in_page, steps, api_client: MedusaStoreClient):
-    """«Ponovi porudžbinu» в кабинете переносит позиции заказа в корзину."""
+def test_repeat_order_fills_cart_from_account(
+    logged_in_page, account_order, steps, api_client: MedusaStoreClient
+):
+    """Заказ из кабинета переносится в корзину кнопкой «Ponovi porudžbinu»."""
     page = logged_in_page
     shop = Storefront(page)
+    display_id = account_order["display_id"]
 
     with steps("открыть список заказов тестового аккаунта",
-               "есть хотя бы один заказ с кнопкой повторной покупки"):
+               "в списке есть заказ прогона и кнопка повторной покупки"):
         shop.open_orders_panel()
-        if shop.order_cards() == 0:
-            pytest.skip(
-                "у тестового аккаунта нет заказов — повторять нечего, "
-                "а создавать заказ в этом тесте нельзя"
-            )
-        repeat = page.locator(ORDER_CARD).first.get_by_role("button", name=REPEAT_ORDER_BUTTON_RE)
-        if repeat.count() == 0:
-            pytest.skip("в первом заказе нет кнопки повторной покупки — тест не применим")
+        card = shop.order_card(display_id)
+        assert card.count() >= 1, (
+            f"заказ {display_id} не найден в списке заказов кабинета "
+            f"(всего строк: {shop.order_cards()})"
+        )
+        repeat = card.first.get_by_role("button", name=REPEAT_ORDER_BUTTON_RE)
+        assert repeat.count() >= 1, f"в заказе {display_id} нет кнопки «Ponovi porudžbinu»"
 
     with steps("очистить корзину тестового аккаунта перед повтором",
                "корзина пуста, в неё попадут только позиции заказа"):
@@ -59,13 +62,13 @@ def test_repeat_order_fills_cart_from_account(logged_in_page, steps, api_client:
             _LEFTOVER_CARTS.append(cart_id)
             api_client.remove_all_items(cart_id)
 
-    with steps("нажать «Ponovi porudžbinu» в первом заказе",
+    with steps("нажать «Ponovi porudžbinu» в заказе прогона",
                "витрина открыла корзину, в ней есть позиции"):
         repeat.first.click()
         if not shop.wait_until(lambda: shop.cart_line_count() > 0, 20.0):
             alert = page.locator(REPEAT_ALERT)
             if alert.count():
-                # позиции заказа распроданы на стэнде — витрина отказалась
+                # позиции заказа распроданы на стенде — витрина отказалась
                 # повторять заказ целиком, проверять в корзине нечего
                 pytest.skip(f"витрина не повторила заказ: {alert.first.inner_text().strip()!r}")
             pytest.fail("после «Ponovi porudžbinu» корзина осталась пустой")
@@ -76,11 +79,19 @@ def test_repeat_order_fills_cart_from_account(logged_in_page, steps, api_client:
                 _LEFTOVER_CARTS.append(new_cart)
 
     with steps("посмотреть позиции повторённого заказа",
-               "у каждой позиции есть название и ненулевая цена"):
+               "в корзине позиция купленного товара, с названием и ценой"):
         lines = shop.cart_line_count()
         assert lines >= 1, "после повтора заказа в корзине ни одной позиции"
-        for i in range(min(lines, 5)):
-            title = page.locator(CART_LINE_TITLE).nth(i).inner_text().strip()
-            price = shop.cart_line_price(i)
-            assert title, f"позиция {i} без названия"
-            assert any(ch.isdigit() for ch in price), f"позиция {title!r} без цены: {price!r}"
+        titles = [
+            page.locator(CART_LINE_TITLE).nth(i).inner_text().strip()
+            for i in range(min(lines, 5))
+        ]
+        for title in titles:
+            assert title, "позиция в корзине без названия"
+        wanted = (account_order["product_title"] or "").strip().lower()
+        if wanted:
+            assert any(wanted in t.lower() for t in titles), (
+                f"в корзине нет позиции заказанного товара {wanted!r}: {titles}"
+            )
+        price = shop.cart_line_price(0)
+        assert any(ch.isdigit() for ch in price), f"позиция {titles[0]!r} без цены: {price!r}"
