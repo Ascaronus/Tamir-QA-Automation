@@ -1,6 +1,7 @@
 """E2E-14. Избранное: сердечко на PDP добавляет товар, страница /rs/wishlist и счётчик
-шапки показывают обе позиции; снятое исчезает после перезагрузки. Избранное аккаунта
-возвращается к исходному состоянию — аккаунт на стэнде общий.
+шапки показывают обе позиции; снятое исчезает после перезагрузки. Вторая проверка снимает
+товар сердечком прямо на карточке страницы /rs/wishlist. Избранное аккаунта возвращается
+к исходному состоянию — аккаунт на стэнде общий.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from qa.medusa_store import MedusaStoreClient
 from qa.ui import (
     CATALOG_CARD_ITEM,
     FAVORITE_BUTTON,
+    FAVORITE_READY,
     PRODUCT_CARD,
     WISHLIST_HEADING,
     Storefront,
@@ -141,4 +143,99 @@ def test_wishlist_add_remove_and_pdp_state(logged_in_page, api_client: MedusaSto
         shop.page.wait_for_selector(WISHLIST_HEADING, timeout=15_000)
         assert shop.wait_wishlist_size(initial + 1), (
             f"снятие не пропало из избранного: было {initial}, {_wishlist_snapshot(shop)}"
+        )
+
+
+def _wishlist_card(shop: Storefront, title: str):
+    """Карточка товара в избранном по её заголовку (``li.product-card``)."""
+    cards = shop.page.locator(CATALOG_CARD_ITEM)
+    for i in range(cards.count()):
+        card = cards.nth(i)
+        link = card.locator(PRODUCT_CARD).first
+        if link.count() and (link.inner_text() or "").strip() == title:
+            return card
+    return None
+
+
+def _wait_wishlist_back(shop: Storefront, expected: int, timeout_s: float = 30.0) -> bool:
+    """Ждёт ``expected`` карточек в избранном.
+
+    ``WISHLIST_COUNT`` в шапке рендерится только при непустом списке
+    (``WishlistLink.tsx``: ``ids.length > 0``), поэтому нуль проверяется блоком
+    «избранного нет», а не счётчиком.
+    """
+
+    def probe() -> bool:
+        if shop.wishlist_item_count() != expected:
+            return False
+        if expected == 0:
+            return shop.wishlist_is_empty()
+        return shop.wishlist_header_count() == expected
+
+    return shop.wait_until(probe, timeout_s)
+
+
+def test_wishlist_page_card_heart_removes_product(
+    logged_in_page, api_client: MedusaStoreClient, steps
+):
+    """Сердечко на карточке в ``/rs/wishlist`` снимает товар так же, как сердечко на PDP."""
+    del api_client  # состояние читаем витриной: карточки, счётчик шапки, пустой экран
+    page = logged_in_page
+    shop = Storefront(page)
+
+    with steps("запомнить исходное число позиций избранного",
+               "список пуст или в нём уже есть позиции"):
+        shop.open_wishlist()
+        shop.wait_until(lambda: shop.wishlist_is_empty() or shop.wishlist_item_count() > 0,
+                        timeout_s=20.0)
+        initial = max(shop.wishlist_item_count(), 0)
+
+    picks = _catalog_picks(shop, want=1)
+    assert picks, f"в каталоге не нашлось товара с кнопкой избранного: {picks}"
+    href, title = picks[0]
+
+    with steps(f"добавить «{title}» сердечком на PDP",
+               f"на странице избранного {initial + 1} позиция и есть нужная карточка"):
+        shop.open_product(href)
+        shop.wait_favorite_ready()
+        shop.toggle_favorite()
+        _FAVORITES_ADDED.append(href)
+        assert shop.wait_favorite_state(True, timeout_s=20.0), (
+            f"сердечко не нажалось на PDP: {_wishlist_snapshot(shop)}"
+        )
+        shop.open_wishlist()
+        assert _wait_wishlist_back(shop, initial + 1), (
+            f"добавление не отразилось на странице избранного: было {initial}, "
+            f"{_wishlist_snapshot(shop)}"
+        )
+        assert _wishlist_card(shop, title) is not None, (
+            f"в избранном нет карточки «{title}»: {_wishlist_snapshot(shop)}"
+        )
+
+    with steps("снять товар сердечком прямо на его карточке в /rs/wishlist",
+               f"карточка исчезла, счётчик шапки снова {initial}"):
+        card = _wishlist_card(shop, title)
+        assert card is not None, f"карточка «{title}» пропала до клика"
+        card.locator(FAVORITE_READY).first.wait_for(state="attached", timeout=20_000)
+        card.locator(FAVORITE_BUTTON).first.click()
+        assert _wait_wishlist_back(shop, initial), (
+            f"карточка не исчезла после клика: было {initial}, {_wishlist_snapshot(shop)}"
+        )
+        assert _wishlist_card(shop, title) is None, "карточка осталась в избранном"
+
+    with steps("снятие переживает перезагрузку страницы избранного",
+               f"по-прежнему {initial} позиций"):
+        page.reload(wait_until="domcontentloaded")
+        shop.page.wait_for_selector(WISHLIST_HEADING, timeout=15_000)
+        assert _wait_wishlist_back(shop, initial), (
+            f"после перезагрузки снятое вернулось: {_wishlist_snapshot(shop)}"
+        )
+        assert _wishlist_card(shop, title) is None, "снятие не сохранилось"
+
+    with steps("PDP снятого товара показывает неснятое сердечко",
+               "aria-pressed=false"):
+        shop.open_product(href)
+        shop.wait_favorite_ready()
+        assert shop.favorite_state() is False, (
+            "PDP считает товар выбранным после снятия со страницы избранного"
         )
