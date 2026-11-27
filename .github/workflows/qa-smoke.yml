@@ -234,6 +234,34 @@ jobs:
           set -euo pipefail
           .venv/bin/playwright --version
 
+      # Снимаем голоса QA-покупателя, оставшиеся на QA-отзывах от прошлых прогонов.
+      # Голос в продукте неизменяем (unvote-эндпоинта нет, в админке голоса не
+      # удаляются), а повторный голос того же покупателя на тот отзыв — no-op:
+      # на втором прогоне кнопки уже disabled и E2E-20 честно скипается. Поэтому
+      # перед браузерным прогоном убираем ровно свои голоса: только покупателя
+      # QA_WEB_EMAIL и только отзывов с меткой QA-FIXTURE — чужие отзывы и голоса
+      # не трогаем. Шаг идёт на машине стенда (self-hosted runner: actions-runner
+      # состоит в группе docker), прямого API для удаления голосов на стенде нет.
+      # continue-on-error: сам skip он не снимает, но сбой клининга не должен
+      # перекрашивать прогон — тесты честно скипнутся, если кнопки окажутся
+      # disabled.
+      - name: Снятие голосов QA-покупателя с QA-отзывов
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # SQL идёт через stdin: psql интерполирует :'qa_email' только в тексте
+          # из stdin/-f, а не в -c (проверено на стенде). Here-string, а не
+          # heredoc: терминатор heredoc в YAML block scalar нельзя поставить
+          # в колонку 0, не сломав сам workflow.
+          printf '%s\n' \
+            "delete from tamir_review_vote v" \
+            "  using tamir_review r, customer c" \
+            "  where v.review_id = r.id and v.customer_id = c.id" \
+            "    and c.email = :'qa_email' and r.body like 'QA-FIXTURE%'" \
+            "  returning v.id, v.review_id, v.value;" |
+            docker exec -i tamir-staging-postgres-1 psql -U tamir_staging -d tamir_staging \
+              -v qa_email="$QA_WEB_EMAIL"
+
       # Отдельный allure-каталог и отдельный вызов pytest: addopts содержит
       # --clean-alluredir, поэтому рядом с прогоном qa-smoke эти же маркеры
       # затирали бы чужие результаты.
