@@ -38,7 +38,7 @@ uv run pytest
 `scenario`, `checkout`, `tcms` — они объявлены в `pytest.ini`):
 
 ```bash
-pytest -m "unit or smoke or api or seo or catalog"  # как в job qa-smoke
+pytest -m "(unit or smoke or api or seo or catalog) and not (scenario or e2e)"  # как в job qa-smoke
 pytest -m "e2e or scenario"                         # как в job qa-e2e
 pytest -m smoke                  # только витрина
 pytest -m api                    # только Medusa API (в том числе сценарии оформления)
@@ -105,22 +105,34 @@ Allure-результаты складываются в `.tmp/allure-results` (�
   - путь гостя: каталог → карточка товара → корзина → двухшаговое оформление →
     страница заказа → отмена заказа админкой (`tests/e2e/test_guest_shop_journey.py`);
   - путь зарегистрированного покупателя: вход готового тестового аккаунта, заказ со
-    страницы товара, отмена — `tests/e2e/test_registered_shop_journey.py`; сама
+    страницы товара, отмена — `tests/e2e/test_registered_customer_journey.py`; сама
     регистрация покрыта только до шага с капчей (Cloudflare Turnstile не выдаёт
-    токен headless-браузеру, см. `docs/FINDINGS-frontend-backend.md`).
+    токен headless-браузеру, см. `docs/FINDINGS-frontend-backend.md`);
+  - поверхности витрины сверх покупки: фильтры, сортировка и страница каталога,
+    поиск из шапки, содержимое карточки товара, избранное, отзывы и голоса за них,
+    кабинет (профиль, повтор заказа), переключатель языка, cookie-баннер, чат TAMIR
+    и картинки в нём, мобильный вьюпорт 390×844 и админка Medusa (`/app` на хосте
+    API, только чтение) — с номерами кейсов в `docs/TEST-PLAN.md`, §14.
 - **M3 — сценарии оформления через витринный API (без браузера):**
   `tests/api/test_checkout_scenarios.py`: заказ гостя доходит до магазина и письма,
   количество сверх остатка отвергается, у каждого товара каталога работает страница.
-- **CI:** `qa-unit` (GitHub-hosted, на pull request) → `qa-smoke` (self-hosted runner
-  на staging, unit + smoke + api + seo + catalog) → `qa-e2e` (self-hosted, e2e +
-  scenario, и уборка тестовых данных после него) → `qa-report` (GitHub-hosted, там
-  есть Java) → `qa-publish` (выкладывает отчёт в каталог отчётов на staging).
+  Рядом — контракты поиска (`tests/api/test_search_api.py`), избранного
+  (`tests/api/test_wishlist_api.py`) и картинок в чате
+  (`tests/api/test_chat_images.py`), и сценарии саморегистрации, сброса пароля и
+  отзыва покупателя (`tests/scenario/`, маркеры `scenario` + `api`).
+- **CI:** `qa-unit` (GitHub-hosted, на pull request, `-m unit`) → `qa-smoke`
+  (self-hosted runner на staging, `-m "(unit or smoke or api or seo or catalog) and
+  not (scenario or e2e)"`) → `qa-e2e` (self-hosted, `-m "e2e or scenario"`, и уборка
+  тестовых данных после него) → `qa-report` (GitHub-hosted, там есть Java: общий
+  Allure-отчёт, сидинг каталога Kiwi TCMS и перенос результатов) → `qa-tcms`
+  (GitHub-hosted, `-m tcms`, проверки интеграции с Kiwi TCMS) → `qa-publish`
+  (выкладывает отчёт в каталог отчётов на staging).
 - **Kiwi TCMS:** JSON-RPC-клиент, сидинг каталога и синхронизация результатов из
   Allure в тестовый прогон (`scripts/tcms_seed.py`, `scripts/tcms_sync_results.py`),
   читающие проверки (`pytest -m tcms`). Seed и sync выполняются в CI на прогонах
   `main` в джобе `qa-report`, куда стекаются результаты обоих прогонов — и `qa-smoke`,
   и `qa-e2e`. В каталог TCMS попадают только тесты пользовательских сценариев
-  (24 из 142): что именно и почему, описано в `docs/TCMS.md`.
+  (125 из 269): что именно и почему, описано в `docs/TCMS.md`.
 
 ## Структура
 
@@ -134,7 +146,8 @@ scripts/       сидинг каталога Kiwi TCMS, перенос резу�
 tests/
   smoke/       read-only проверки доступности витрины
   api/         контракты Medusa API, сценарии оформления, проверки Kiwi TCMS (`tcms`)
-  e2e/         браузерные пути покупателя (`e2e`, `checkout`)
+  e2e/         браузерные пути покупателя и поверхности витрины (`e2e`, `checkout`,
+               у части файлов ещё маркер `catalog` — они идут в каталог TCMS)
   seo/         закрытие non-prod от индексации (маркер `seo`)
   catalog/     поведение витрины: каталог, карточка, корзина, локализация (`catalog`)
   unit/        чистые юнит-проверки guard'а, парсеров, HTTP-клиента и клиента TCMS

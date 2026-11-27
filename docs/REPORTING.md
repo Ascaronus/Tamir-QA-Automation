@@ -1,17 +1,19 @@
 # Как прогон попадает на https://qa.tamir.rs
 
-Пять джобов в `.github/workflows/qa-smoke.yml` образуют конвейер:
+Шесть джобов в `.github/workflows/qa-smoke.yml` образуют конвейер:
 
 ```
 qa-unit ─(pull request)→ офлайн-проверки репозитория, без отчёта
 
 qa-smoke ─┐
-          ├→ qa-report → qa-publish → https://qa.tamir.rs/<n>/
-qa-e2e  ──┘
+          ├→ qa-report ─┬→ qa-publish → https://qa.tamir.rs/<n>/
+qa-e2e  ──┘             └→ qa-tcms    → проверки интеграции с Kiwi TCMS
 ```
 
 `qa-smoke` и `qa-e2e` гоняют тесты на staging-раннере, `qa-report` собирает из их
 результатов один Allure-отчёт, `qa-publish` кладёт его в каталог раздачи.
+`qa-tcms` стартует после `qa-report` и проверяет саму интеграцию с Kiwi TCMS;
+его результаты в публикуемый отчёт не входят — остаются артефактом прогона.
 
 Расписание и запуск: `push` и `pull_request` в `main`, `workflow_dispatch`
 (с input `headed` — браузер с интерфейсом) и ночной cron `0 5 * * 1-5` по будням.
@@ -118,10 +120,20 @@ read-only проверки, и браузерные путешествия по�
 
 Размещение в GitHub-hosted джобе означает, что `tcms.tamir.rs` должен быть
 доступен из публичного интернета. Как только на него включится Cloudflare Access,
-эти шаги нужно переносить на self-hosted джоб (например `qa-tcms`), иначе JSON-RPC
-начнёт отвечать `403`.
+эти шаги нужно переносить на self-hosted джоб — нынешний `qa-tcms` тоже
+GitHub-hosted и для этого не подойдёт, иначе JSON-RPC начнёт отвечать `403`.
 
-## 4. `qa-publish` — self-hosted runner, только `main`
+## 4. `qa-tcms` — GitHub-hosted, проверки интеграции с Kiwi TCMS
+
+`needs: [qa-report]`, на любом событии кроме pull request (`if: github.event_name
+!= 'pull_request'`), `ubuntu-latest`, таймаут 10 минут. Джоб запускает
+`pytest -m tcms --junitxml=.tmp/junit.xml` — пять проверок JSON-RPC-клиента,
+сидинга каталога и переноса результатов (подробности — [TCMS.md](TCMS.md)).
+Секреты — только `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD`. Сырые Allure-результаты
+уходят артефактом `allure-results-tcms` с `if: always()`: к моменту старта джоба
+отчёт в `qa-report` уже собран, поэтому в публикуемый отчёт эти тесты не попадают.
+
+## 5. `qa-publish` — self-hosted runner, только `main`
 
 `needs: [qa-report, qa-smoke, qa-e2e]`. Скачивает `allure-report` и обычными
 файловыми операциями раскладывает отчёт по фиксированным путям:
@@ -252,7 +264,7 @@ python3 qa/publish_runs_index.py \
 | `MAILPIT_URL`, `MAILPIT_USER`, `MAILPIT_PASSWORD` | `qa-e2e`: чтение тестовой почты (доступно только из локальной сети стенда) |
 | `QA_WEB_EMAIL`, `QA_WEB_PASSWORD` | `qa-e2e`: учётка постоянного тестового покупателя на стенде (регистрация закрыта Turnstile, см. [FINDINGS-frontend-backend.md](FINDINGS-frontend-backend.md)) |
 | `QA_CAPTCHA_BYPASS_TOKEN` | `qa-e2e`: обход Turnstile на стенде (заголовок `x-qa-captcha-bypass`; продукт понимает его только для хостов `test.tamir.rs` / `test-api.tamir.rs`) |
-| `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD` | `qa-report`: сидинг каталога и перенос результатов в Kiwi TCMS |
+| `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD` | `qa-report`: сидинг каталога и перенос результатов в Kiwi TCMS; `qa-tcms`: проверки интеграции (`-m tcms`) |
 | `vars.WEB_URL`, `vars.API_URL` | `qa-e2e`: адреса стенда (конфигурационные переменные, не секреты) |
 
 Без этих переменных зависящие от них проверки скипаются, а не падают: например,
@@ -296,7 +308,7 @@ python3 qa/publish_runs_index.py \
   scenario"` на `tamir-qa`, а его артефакты `allure-results-e2e` и `steps-e2e`
   вливаются в общий отчёт в `qa-report` (`pattern: allure-results*`, шаги —
   `steps*`). Но статус в `runs.json` передаётся по результату `qa-smoke`
-  (см. п. 4), поэтому упавший браузерный прогон виден только в Allure-отчёте
+  (см. п. 5), поэтому упавший браузерный прогон виден только в Allure-отчёте
   и в логе джобы.
 - **Почтовые проверки привязаны к стендовой сети.** Секреты `MAILPIT_URL`,
   `MAILPIT_USER` и `MAILPIT_PASSWORD` в репозитории заведены, и сценарии
@@ -309,7 +321,7 @@ python3 qa/publish_runs_index.py \
   из публичного интернета, и именно поэтому сидинг и перенос результатов живут в
   GitHub-hosted `qa-report` (секреты `TCMS_URL`, `TCMS_USER`, `TCMS_PASSWORD`).
   Как только Access включится, эти шаги нужно переносить на self-hosted джоб
-  (например `qa-tcms`), иначе начнёт отвечать `403`.
+  (нынешний `qa-tcms` тоже GitHub-hosted), иначе начнёт отвечать `403`.
 
 Ранее здесь был пункт «результаты `qa-e2e` не попадают в TCMS» — он закрыт:
 перенос читает объединённые артефакты обоих прогонов в `qa-report`.
