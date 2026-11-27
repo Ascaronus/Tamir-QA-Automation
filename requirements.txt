@@ -4,6 +4,7 @@ requests>=2.34.2
 allure-pytest>=2.16.2
 python-dotenv>=1.2.4
 PyYAML>=6.0.4
+Pillow>=11.0
 
 # Интеграция с Kiwi TCMS (https://tcms.tamir.rs) идёт через JSON-RPC 2.0
 # (POST /json-rpc/) и собственный клиент qa/tcms.py; kiwitcms-pytest-plugin не

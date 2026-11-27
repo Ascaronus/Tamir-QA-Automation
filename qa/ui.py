@@ -846,8 +846,24 @@ CHAT_LAUNCHER = "button.tamir-chat-launcher"
 CHAT_PANEL = "section.tamir-chat-panel"
 CHAT_LOG = "div.tamir-chat-messages"
 CHAT_CLOSE_BUTTONS = CHAT_PANEL + ' button[aria-label="Zatvori"]'
-CHAT_START_BUTTON = CHAT_PANEL + ' button[type=submit]:has-text("Započni razgovor")'
+# Витрина рисует эту кнопку без атрибута type (<button className="button-primary">,
+# ChatWidget.tsx:354), поэтому CSS по button[type=submit] её не находит — берём класс.
+CHAT_START_BUTTON = 'form.tamir-chat-form button.button-primary:has-text("Započni razgovor")'
 CHAT_INPUT = 'input[name="chat-message"]'  # появляется только после «Započni razgovor»
+
+# Чат с картинками: compose-подвал (footer) появляется только когда есть переписка,
+# поэтому гостевые негативные тесты сначала заводят переписку «Započni razgovor».
+CHAT_GUEST_FORM = "form.tamir-chat-form"
+CHAT_GUEST_NAME_INPUT = CHAT_GUEST_FORM + ' input[autocomplete="given-name"]'
+CHAT_GUEST_EMAIL_INPUT = CHAT_GUEST_FORM + ' input[type=email]'
+CHAT_COMPOSE = "footer.tamir-chat-compose"
+CHAT_ATTACH_INPUT = CHAT_COMPOSE + " input[type=file]"  # accept="image/jpeg,image/png,image/webp"
+CHAT_ATTACHMENT = "div.tamir-chat-attachment"  # превью выбранной картинки в подвале
+CHAT_REMOVE_IMAGE_BUTTON = CHAT_ATTACHMENT + ' button[aria-label="Ukloni sliku"]'
+CHAT_SEND_BUTTON = CHAT_COMPOSE + ' button[type=submit]:has-text("Pošalji")'
+CHAT_SENT_IMAGE = "img.tamir-chat-image"  # alt=«Priložena slika», src=/api/chat/image?id=..&image=..
+CHAT_ALERT = CHAT_PANEL + " div[role=alert]"  # текст ошибки чата (imageInvalid/imageTooLarge)
+CHAT_GUEST_COOKIE = "tb_chat_guest"  # httpOnly cookie с guest_token, ставит Next-прокси
 
 # --- Каталог, категории, drawer --------------------------------------------------------
 CATALOG_SECTION = "section#catalog-products"
