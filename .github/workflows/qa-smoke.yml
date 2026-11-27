@@ -426,6 +426,50 @@ jobs:
             --steps-file .tmp/steps.json \
             --report-url "https://qa.tamir.rs/${GITHUB_RUN_NUMBER}/"
 
+  # Проверки интеграции с Kiwi TCMS (маркер `tcms`, tests/api/test_tcms_api.py).
+  # Тесты скипались в прогонах: секретов TCMS_* в qa-smoke/qa-e2e нет, а маркер
+  # `tcms` не входил ни в одну маркер-экспрессию. Отдельный GitHub-hosted job:
+  # TCMS доступен извне (Cloudflare Tunnel), тесты ходят только на tcms.tamir.rs
+  # и стенда не касаются, поэтому self-hosted раннер и очередь за e2e им не
+  # нужны. После qa-report намеренно: к этому моменту seeder и перенос
+  # результатов в qa-report уже привели каталог в соответствие коду, и проверки
+  # видят актуальное состояние. Свои Allure-результаты — отдельным артефактом:
+  # в публикуемый отчёт они не сливаются (отчёт к этой точке уже собран и
+  # опубликован), статус виден прямо во вкладке Actions.
+  qa-tcms:
+    name: Проверки интеграции Kiwi TCMS (GitHub-hosted)
+    needs: [qa-report]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TCMS_URL: ${{ secrets.TCMS_URL }}
+      TCMS_USER: ${{ secrets.TCMS_USER }}
+      TCMS_PASSWORD: ${{ secrets.TCMS_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Установка uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей и запуск проверок
+        run: |
+          set -euo pipefail
+          uv venv --python 3.12
+          uv pip install -r requirements.txt
+          .venv/bin/pytest -m tcms --junitxml=.tmp/junit.xml
+
+      - name: Загрузка Allure-результатов tcms
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: allure-results-tcms
+          path: .tmp/allure-results/
+          if-no-files-found: warn
+
   qa-publish:
     name: Публикация отчёта на qa.tamir.rs
     # qa-smoke добавлен в needs ради честного статуса: conclusion прогона тестов
