@@ -92,8 +92,13 @@ def test_pdp_quantity_capped_by_stock(page, steps, api_client: MedusaStoreClient
     with steps("нажать «+» один раз", "количество стало 2 — несколько штук брать можно"):
         if plus.is_disabled():
             pytest.skip("весь остаток товара уже зарезервирован — «+» заблокирована")
+        # Клик может прийти до завершения перерисовки степпера, поэтому кликаем
+        # повторно, пока значение не станет 2 (не позже 10 секунд).
         plus.click()
-        assert qty.input_value() == "2", "«+» должна увеличить количество до 2"
+        if not shop.wait_until(lambda: qty.input_value() == "2", timeout_s=5):
+            plus.click()
+            assert shop.wait_until(lambda: qty.input_value() == "2", timeout_s=10), \
+                f"«+» должна увеличить количество до 2: {qty.input_value()!r}"
         assert page.locator(STOCK_ALERT).count() == 0, "в пределах остатка уведомления быть не должно"
 
     with steps(f"ввести в поле количества {stock + 15} — больше остатка",
