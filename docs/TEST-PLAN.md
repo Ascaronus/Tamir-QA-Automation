@@ -117,6 +117,10 @@ read-only smoke, эти тесты намеренно оформляют нас�
 | `e2e`, `catalog` | `tests/e2e/test_search.py` | **E2E-25, поиск витрины**: форма в шапке, выдача без совпадений и прямой URL с `q` |
 | `e2e`, `catalog` | `tests/e2e/test_mobile.py` | **E2E-26, мобильная витрина**: вьюпорт 390×844 — мета, горизонтальный скролл, бургер, поиск, фильтры, PDP |
 | `e2e`, `catalog` | `tests/e2e/test_admin.py` | **E2E-27, админка Medusa v2** (read-only): вход, guards, список товаров, список заказов; идёт на `/app` хоста API (`test-api.tamir.rs`), данных не меняет |
+| `e2e`, `catalog` | `tests/e2e/test_reviews_admin.py` | **E2E-28, экран модерации отзывов**: на `{API_URL}/app/reviews` — `h1` «Reviews / Recenzije», карточки-`article` с формой и кнопками («Save text», «Hide», «Delete», «Restore»), без `<select>`-фильтров; фикстура заранее скипается, если `GET /admin/reviews` лежит (TB-26/TB-28) |
+| `e2e`, `catalog` | `tests/e2e/test_reviews_admin.py` | **E2E-29, новый отзыв в списке модерации**: отзыв, созданный API-рецептом S3-3, виден на первой странице (список свежими сверху) с email автора и бейджем `published`; админ-API подтверждает тот же статус |
+| `e2e`, `catalog` | `tests/e2e/test_reviews_admin.py` | **E2E-30, раундтрип Hide/Restore по UI**: клик «Hide / Sakrij» делает статус `hidden` в `GET /admin/reviews`, клик «Restore / Vrati» возвращает `published`; контроль статуса — только админ-API, карточка скрытого отзыва остаётся в списке |
+| `e2e`, `catalog` | `tests/e2e/test_reviews_admin.py` | **E2E-31, содержимое карточки отзыва**: товар в `<strong>`, рейтинг вида «5.0/5», email автора, форма редактирования предзаполнена телом отзыва (`textarea[name=body]`); свой отзыв в финале мягко удаляется через `POST /admin/reviews/:id` |
 | `scenario`, `api` | `tests/scenario/test_registration_flow.py` | **S3-1, саморегистрация по API**: `registration/start` (с QA-обходом Turnstile) → 6-значный код из письма Mailpit → `registration/verify` → вход `auth/customer/emailpass`; повторный `start` в кулдаун даёт `429`, заведомо неверный код — `CODE_INVALID` |
 | `scenario`, `api` | `tests/scenario/test_password_reset_flow.py` | **S3-2, восстановление пароля по API**: `password-reset/start` → код из Mailpit → `password-reset/verify` → старый пароль не входит, новый входит; тестовый адрес одноразовый |
 | `scenario`, `api` | `tests/scenario/test_review_write_api.py` | **S3-3, написание отзыва по API**: покупатель постит `POST /store/reviews` (QA-обход капчи) — капча без токена даёт `CAPTCHA_REQUIRED`, `rating = 0` — `RATING_REQUIRED`, валидный отзыв выходит на витрину сразу (`201`, автор видит `has_review = true`); уборка проверяемая: модератор `admin@tamir.local` гасит отзыв, а тест требует, чтобы его больше не отдавали и админ-список, и витрина, иначе прогон падает. Пока `GET /admin/reviews` лежит (TB-26), тест скипается до создания данных |
@@ -180,8 +184,9 @@ read-only smoke, эти тесты намеренно оформляют нас�
 
 - **возвраты и выбор способов оплаты** — на стенде не используются, вне скоупа
   автоматизации;
-- **страница модерации отзывов `/app/reviews`** — не тестируется: задача TB-28
-  заморожена до решения владельца.
+- **модерация отзывов `/app/reviews`** с 28.11.2026 в контуре (E2E-28…E2E-31):
+  после продуктового PR #130 экран и `GET /admin/reviews` живы; сам фикс TB-28
+  QA не трогает — тесты только читают и меняют статусы своих отзывов.
 
 ---
 
